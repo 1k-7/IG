@@ -8,7 +8,7 @@ load_dotenv()
 username = os.environ.get("IG_USERNAME")
 email = os.environ.get("IG_EMAIL")
 password = os.environ.get("IG_PASSWORD")
-login_only = ast.literal_eval(os.environ.get("LOGIN_ONLY"))
+login_only = ast.literal_eval(os.environ.get("LOGIN_ONLY", "False"))
 
 
 def authenticate(client, session_file):
@@ -66,7 +66,8 @@ def upload_to_telegram(file_path):
     try:
         bot = telegram.Bot(token=bot_token)
         with open(file_path, 'rb') as video_file:
-            bot.send_video(chat_id=chat_id, video=video_file, timeout=1000)
+            # Corrected line: removed the timeout argument
+            bot.send_video(chat_id=chat_id, video=video_file)
         print(f"[{get_now()}] Uploaded {os.path.basename(file_path)} to Telegram.")
     except Exception as e:
         print(f"[{get_now()}] An error occurred while uploading to Telegram: {e}")
