@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
 import telegram
+import asyncio
 
 load_dotenv()
 username = os.environ.get("IG_USERNAME")
@@ -63,11 +64,13 @@ def upload_to_telegram(file_path):
         print(f"[{get_now()}] Telegram credentials not found in .env file. Skipping upload.")
         return
 
-    try:
+    async def send_video_async():
         bot = telegram.Bot(token=bot_token)
         with open(file_path, 'rb') as video_file:
-            # Corrected line: removed the timeout argument
-            bot.send_video(chat_id=chat_id, video=video_file)
+            await bot.send_video(chat_id=chat_id, video=video_file)
+
+    try:
+        asyncio.run(send_video_async())
         print(f"[{get_now()}] Uploaded {os.path.basename(file_path)} to Telegram.")
     except Exception as e:
         print(f"[{get_now()}] An error occurred while uploading to Telegram: {e}")
