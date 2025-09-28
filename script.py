@@ -1,7 +1,7 @@
 import os, json, time, random, sys, datetime, ast
 from dotenv import load_dotenv
 from instagrapi import Client
-from instagrapi.exceptions import LoginRequired
+from instagrapi.exceptions import LoginRequired, PrivateError
 import telegram
 import asyncio
 import threading
@@ -22,17 +22,16 @@ def start_web_server():
 
 
 def authenticate(client, session_file):
-    # This function uses the reliable session_id method for the first run
     if os.path.exists(session_file):
         try:
             client.load_settings(session_file)
-            # Use a simple check that is less likely to be flagged
+            # Use a simple, non-aggressive check to validate the session
             client.user_info_by_username(username)
-            print(f"[{get_now()}] Session is valid.")
-        except Exception:
-            print(f"[{get_now()}] Session is invalid. Re-logging in.")
+            print(f"[{get_now()}] Session file is valid and loaded.")
+        except Exception as e:
+            print(f"[{get_now()}] Session file is invalid: {e}. Re-logging in via session ID.")
             os.remove(session_file)
-            # Fallback to session_id login
+            # Fallback to session_id login if the session file is broken
             session_id = os.environ.get("IG_SESSION_ID")
             if not session_id:
                 raise ValueError("Session is invalid and IG_SESSION_ID is not set.")
@@ -62,12 +61,12 @@ def save_seen_messages(file, messages):
 
 
 def get_now():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.datetime.now().strftime("%Y-m-d %H:%M:%S")
 
 
-def sleep_countdown():
-    sleep_time = random.randint(30 * 60, 60 * 60)
-    print(f"[{get_now()}] Timeout duration: {sleep_time} seconds.")
+def sleep_countdown(duration_minutes=5):
+    sleep_time = duration_minutes * 60
+    print(f"[{get_now()}] Cooling down for {duration_minutes} minutes.")
     for remaining_time in range(sleep_time, 0, -1):
         sys.stdout.write(f"\r[{get_now()}] Time remaining: {remaining_time} second(s).")
         sys.stdout.flush()
@@ -132,34 +131,38 @@ def main():
         return
 
     seen_message_ids = load_seen_messages(seen_messages_file)
-    print(f"[{get_now()}] Loaded seen messages.")
+    print(f"[{get_now()}] Loaded seen messages. Starting main loop.")
 
     while True:
         try:
-            threads = cl.direct_threads()
+            threads = cl.direct_threads(amount=20)
             for thread in threads:
-                messages = cl.direct_messages(thread.id)
+                messages = cl.direct_messages(thread.id, amount=20)
                 for message in messages:
                     if message.id not in seen_message_ids:
                         if message.item_type == "clip":
                             print(f"[{get_now()}] New reel found: {message.clip.pk}")
-                            try:
-                                download_clip(cl, message.clip.pk)
-                            except Exception as e:
-                                print(f"Error during download/upload: {e}")
+                            download_clip(cl, message.clip.pk)
                         
                         seen_message_ids.add(message.id)
                         save_seen_messages(seen_messages_file, seen_message_ids)
+            
+            # Use a longer, randomized sleep after a successful run
+            sleep_duration = random.randint(30, 60)
+            print(f"[{get_now()}] Successful check. Sleeping for {sleep_duration} minutes.")
+            sleep_countdown(sleep_duration)
 
+        except PrivateError as e:
+            # This catches JSONDecodeError and other similar issues
+            print(f"[{get_now()}] Instagram API Error (PrivateError): {e}. Cooling down.")
+            sleep_countdown(15) # Wait 15 minutes before retrying
         except Exception as e:
             print(f"[{get_now()}] A critical error occurred: {e}")
             if "Login required" in str(e) and os.path.exists(session_file):
                 os.remove(session_file)
-                print("Session file deleted due to login error. Restarting...")
-            sleep_countdown()
+                print("Session file deleted. Restarting after countdown to re-authenticate.")
+            sleep_countdown(10) # Wait 10 minutes before a full restart
             os.execv(sys.executable, ["python"] + sys.argv)
-
-        sleep_countdown()
 
 
 if __name__ == "__main__":
