@@ -2,6 +2,7 @@ import os, json, time, random, sys, datetime, ast
 from dotenv import load_dotenv
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
+import telegram
 
 load_dotenv()
 username = os.environ.get("IG_USERNAME")
@@ -54,6 +55,22 @@ def sleep_countdown():
 
     sys.stdout.write("\n")
 
+def upload_to_telegram(file_path):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print(f"[{get_now()}] Telegram credentials not found in .env file. Skipping upload.")
+        return
+
+    try:
+        bot = telegram.Bot(token=bot_token)
+        with open(file_path, 'rb') as video_file:
+            bot.send_video(chat_id=chat_id, video=video_file, timeout=1000)
+        print(f"[{get_now()}] Uploaded {os.path.basename(file_path)} to Telegram.")
+    except Exception as e:
+        print(f"[{get_now()}] An error occurred while uploading to Telegram: {e}")
+
 def download_clip(client, clip_pk):
     print(f"[{get_now()}] Downloading reel {clip_pk}")
 
@@ -68,9 +85,17 @@ def download_clip(client, clip_pk):
         os.makedirs(download_path)
         print(f"[{get_now()}] Created {download_path}")
 
-    client.video_download(clip_pk, "download")
+    video_path = client.video_download(clip_pk, "download")
     print(f"[{get_now()}] Downloaded {clip_pk}")
     client.delay_range = [1, 3]
+
+    # Upload to Telegram
+    upload_to_telegram(video_path)
+
+    # Optional: Delete the local file after uploading
+    if os.path.exists(video_path):
+        os.remove(video_path)
+        print(f"[{get_now()}] Deleted local file: {video_path}")
 
 
 def main():
