@@ -7,24 +7,25 @@ import asyncio
 
 load_dotenv()
 username = os.environ.get("IG_USERNAME")
-email = os.environ.get("IG_EMAIL")
-password = os.environ.get("IG_PASSWORD")
+# Password is not needed when using sessionid for the first login
+# password = os.environ.get("IG_PASSWORD") 
 login_only = ast.literal_eval(os.environ.get("LOGIN_ONLY", "False"))
 
 
 def authenticate(client, session_file):
+    # This function uses the reliable session_id method for the first run
     if os.path.exists(session_file):
         client.load_settings(session_file)
-        try:
-            client.login(username, password)
-            client.get_timeline_feed()  # check if the session is valid
-        except LoginRequired:
-            # session is invalid, re-login and save the new session
-            client.login(username, password)
-            client.dump_settings(session_file)
+        # We use login with username here which will use the session file if valid
+        client.login(username, "") 
     else:
-        client.login(username, password)
+        # If no session file, create one using the sessionid from your .env
+        session_id = os.environ.get("IG_SESSION_ID")
+        if not session_id:
+            raise ValueError("IG_SESSION_ID not found in .env. This is required for the first run.")
+        client.login_by_sessionid(session_id)
         client.dump_settings(session_file)
+        print(f"[{get_now()}] Successfully created new session file from session ID.")
 
 
 def load_seen_messages(file):
@@ -45,7 +46,6 @@ def get_now():
 
 
 def sleep_countdown():
-    # check for new messages every random seconds
     sleep_time = random.randint(30 * 60, 60 * 60)
     print(f"[{get_now()}] Timeout duration: {sleep_time} seconds.")
 
@@ -61,7 +61,7 @@ def upload_to_telegram(file_path):
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     if not bot_token or not chat_id:
-        print(f"[{get_now()}] Telegram credentials not found in .env file. Skipping upload.")
+        print(f"[{get_now()}] Telegram credentials not found. Skipping upload.")
         return
 
     async def send_video_async():
@@ -77,14 +77,9 @@ def upload_to_telegram(file_path):
 
 def download_clip(client, clip_pk):
     print(f"[{get_now()}] Downloading reel {clip_pk}")
-
-    # Get the current working directory
     cwd = os.getcwd()
-
-    # Construct the path to the download folder
     download_path = os.path.join(cwd, "download")
 
-    # Check if the download folder exists
     if not os.path.exists(download_path):
         os.makedirs(download_path)
         print(f"[{get_now()}] Created {download_path}")
@@ -92,11 +87,8 @@ def download_clip(client, clip_pk):
     video_path = client.video_download(clip_pk, "download")
     print(f"[{get_now()}] Downloaded {clip_pk}")
     client.delay_range = [1, 3]
-
-    # Upload to Telegram
     upload_to_telegram(video_path)
 
-    # Optional: Delete the local file after uploading
     if os.path.exists(video_path):
         os.remove(video_path)
         print(f"[{get_now()}] Deleted local file: {video_path}")
@@ -134,33 +126,22 @@ def main():
 
                 for message in messages:
                     if message.id not in seen_message_ids:
-                        match message.item_type:
-                            case "clip":
-                                print(
-                                    f"[{get_now()}] Downloading reel {message.clip.pk}"
-                                )
-                                try:
-                                    download_clip(cl, message.clip.pk)
-                                except Exception as e:
-                                    print(e)
-                            case "xma_story_share":
-                                print(
-                                    f"[{get_now()}] New story video in thread {thread_id}: {message.id}"
-                                )
-                            case _:
-                                print(
-                                    f"[{get_now()}] New message in thread {thread_id}: {message.text}"
-                                )
+                        if message.item_type == "clip":
+                            print(f"[{get_now()}] New reel {message.clip.pk}")
+                            try:
+                                download_clip(cl, message.clip.pk)
+                            except Exception as e:
+                                print(f"Error downloading clip: {e}")
+                        # ... handle other message types if needed
                         seen_message_ids.add(message.id)
                         save_seen_messages(seen_messages_file, seen_message_ids)
 
         except Exception as e:
             print(f"[{get_now()}] An exception occurred: {e}")
-            print(f"[{get_now()}] Deleting the session file and restarting the script.")
             if os.path.exists(session_file):
                 os.remove(session_file)
+            print("Session file deleted. Restarting after countdown.")
             sleep_countdown()
-            print(f"[{get_now()}] Restarting the script now.")
             os.execv(sys.executable, ["python"] + sys.argv)
 
         sleep_countdown()
