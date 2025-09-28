@@ -10,12 +10,10 @@ import socketserver
 
 load_dotenv()
 username = os.environ.get("IG_USERNAME")
-# password = os.environ.get("IG_PASSWORD") # Not needed if using sessionid
 login_only = ast.literal_eval(os.environ.get("LOGIN_ONLY", "False"))
 
 
 def start_web_server():
-    # Get the port from the environment variable Render provides
     PORT = int(os.environ.get("PORT", 8080))
     Handler = http.server.SimpleHTTPRequestHandler
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
@@ -24,10 +22,24 @@ def start_web_server():
 
 
 def authenticate(client, session_file):
+    # This function uses the reliable session_id method for the first run
     if os.path.exists(session_file):
-        client.load_settings(session_file)
-        client.login(username, "") # Will use the session file
+        try:
+            client.load_settings(session_file)
+            # Use a simple check that is less likely to be flagged
+            client.user_info_by_username(username)
+            print(f"[{get_now()}] Session is valid.")
+        except Exception:
+            print(f"[{get_now()}] Session is invalid. Re-logging in.")
+            os.remove(session_file)
+            # Fallback to session_id login
+            session_id = os.environ.get("IG_SESSION_ID")
+            if not session_id:
+                raise ValueError("Session is invalid and IG_SESSION_ID is not set.")
+            client.login_by_sessionid(session_id)
+            client.dump_settings(session_file)
     else:
+        # If no session file, create one using the sessionid from your .env
         session_id = os.environ.get("IG_SESSION_ID")
         if not session_id:
             raise ValueError("IG_SESSION_ID not found in .env. This is required for the first run.")
@@ -101,7 +113,6 @@ def download_clip(client, clip_pk):
 
 
 def main():
-    # Start the web server in a separate thread
     web_thread = threading.Thread(target=start_web_server)
     web_thread.daemon = True
     web_thread.start()
