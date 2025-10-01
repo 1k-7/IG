@@ -191,21 +191,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db_add_user(user.id)
     welcome_text = (
-        f"👋 **Hi {user.mention_html()}!**\n\n"
+        f"👋 <b>Hi {user.mention_html()}!</b>\n\n"
         "I am your personal Instagram DM Reels Bot. I monitor your DMs and automatically forward any reels to you here.\n\n"
-        "**Features:**\n"
-        "🔗 Link multiple Instagram accounts via `/addaccount`.\n"
+        "<b>Features:</b>\n"
+        "🔗 Link multiple Instagram accounts via <code>/addaccount</code>.\n"
         "🎯 Set a target chat (group or channel) for uploads.\n"
         "🔄 Customize the check interval for each account.\n"
-        "📂 Enable **Topic Mode** in supergroups to sort reels by chat.\n\n"
-        "**Available Commands:**\n"
-        "`/addaccount` - Link a new Instagram account.\n"
-        "`/myaccounts` - View and manage your linked accounts.\n"
-        "`/logc <ID>` - Set a channel for bot logs.\n"
-        "`/ping` - Check if the bot is alive.\n"
-        "`/status` - View bot status.\n"
-        "`/restart` - (Admin only) Restart the bot.\n"
-        "`/help` - Show this welcome message again."
+        "📂 Enable <b>Topic Mode</b> in supergroups to sort reels by chat.\n\n"
+        "<b>Available Commands:</b>\n"
+        "<code>/addaccount</code> - Link a new Instagram account.\n"
+        "<code>/myaccounts</code> - View and manage your linked accounts.\n"
+        "<code>/logc &lt;ID&gt;</code> - Set a channel for bot logs.\n"
+        "<code>/ping</code> - Check if the bot is alive.\n"
+        "<code>/status</code> - View bot status.\n"
+        "<code>/restart</code> - (Admin only) Restart the bot.\n"
+        "<code>/help</code> - Show this welcome message again."
     )
     await update.message.reply_html(welcome_text, disable_web_page_preview=True)
 
@@ -223,7 +223,7 @@ async def add_account_get_session_id(update: Update, context: ContextTypes.DEFAU
         ig_username = temp_client.user_info(temp_client.user_id).username
         
         db_add_or_update_account(user_id, ig_username, session_id)
-        await update.message.reply_text(f"✅ Success! Instagram account **{ig_username}** has been linked. Use `/myaccounts` to configure it.")
+        await update.message.reply_html(f"✅ Success! Instagram account <b>{ig_username}</b> has been linked. Use <code>/myaccounts</code> to configure it.")
         return ConversationHandler.END
     except Exception as e:
         await update.message.reply_text(f"❌ Login failed: {e}. Please check your session ID and try again, or /cancel.")
@@ -260,10 +260,10 @@ async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     topic_mode = "✅ Enabled" if account.get('topic_mode') else "❌ Disabled"
 
     text = (
-        f"**Managing: {ig_username}**\n\n"
-        f"Target Chat: `{target_chat}`\n"
-        f"Check Interval: `{interval}` minutes\n"
-        f"Topic Mode: `{topic_mode}`"
+        f"<b>Managing: {ig_username}</b>\n\n"
+        f"Target Chat: <code>{target_chat}</code>\n"
+        f"Check Interval: <code>{interval}</code> minutes\n"
+        f"Topic Mode: <code>{topic_mode}</code>"
     )
     
     keyboard = [
@@ -275,7 +275,7 @@ async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("⬅️ Back to Accounts", callback_data="myaccounts")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Pong! 🏓 I am alive and running.")
@@ -289,9 +289,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
     await update.message.reply_text("Bot is restarting... This can take a minute on Render.")
-    # A proper restart is handled by the deployment platform. This command is a stub.
-    # For standalone use, you could use: os.execv(sys.executable, ['python'] + sys.argv)
-
+    
 async def log_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id != ADMIN_USER_ID:
@@ -300,7 +298,7 @@ async def log_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         channel_id = int(context.args[0])
         db_set_log_channel(user_id, channel_id)
-        await update.message.reply_text(f"✅ Log channel has been set to `{channel_id}`.")
+        await update.message.reply_html(f"✅ Log channel has been set to <code>{channel_id}</code>.")
         await log_to_channel(context.bot, user_id, "Log channel has been configured.")
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /logc <channel_id>")
@@ -315,15 +313,14 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     action, ig_username = query.data.split("_", 1)
+    context.user_data['ig_username_to_manage'] = ig_username
 
     if action == "settarget":
-        context.user_data['ig_username_to_manage'] = ig_username
-        await query.message.reply_text(f"Please send the ID of the target chat for **{ig_username}**.")
+        await query.message.reply_html(f"Please send the ID of the target chat for <b>{ig_username}</b>.")
         return AWAIT_TARGET_CHAT_ID
         
     elif action == "setinterval":
-        context.user_data['ig_username_to_manage'] = ig_username
-        await query.message.reply_text(f"Please send the check interval in minutes for **{ig_username}** (e.g., 30).")
+        await query.message.reply_html(f"Please send the check interval in minutes for <b>{ig_username}</b> (e.g., 30).")
         return AWAIT_INTERVAL
 
     elif action == "toggletopic":
@@ -331,25 +328,26 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         new_mode = not account.get('topic_mode', False)
         db_set_topic_mode(ig_username, new_mode)
         await query.message.reply_text(f"Topic mode for {ig_username} has been {'enabled' if new_mode else 'disabled'}.")
-        await manage_account_menu(update, context) # Refresh menu
+        # Create a new update object to refresh the menu correctly
+        query.data = f"manage_{ig_username}"
+        await manage_account_menu(update, context)
 
     elif action == "cleardata":
         db_clear_seen_reels(ig_username)
-        await query.message.reply_text(f"✅ Seen reels data for **{ig_username}** has been cleared.")
+        await query.message.reply_html(f"✅ Seen reels data for <b>{ig_username}</b> has been cleared.")
+        query.data = f"manage_{ig_username}"
         await manage_account_menu(update, context)
 
     elif action == "remove":
-        keyboard = [
-            [
-                InlineKeyboardButton("YES, REMOVE IT", callback_data=f"confirmremove_{ig_username}"),
-                InlineKeyboardButton("NO, CANCEL", callback_data=f"manage_{ig_username}")
-            ]
-        ]
-        await query.edit_message_text(f"⚠️ Are you sure you want to remove **{ig_username}**? This cannot be undone.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        keyboard = [[
+            InlineKeyboardButton("YES, REMOVE IT", callback_data=f"confirmremove_{ig_username}"),
+            InlineKeyboardButton("NO, CANCEL", callback_data=f"manage_{ig_username}")
+        ]]
+        await query.edit_message_text(f"⚠️ Are you sure you want to remove <b>{ig_username}</b>? This cannot be undone.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
     elif action == "confirmremove":
         db_remove_account(update.effective_user.id, ig_username)
-        await query.edit_message_text(f"✅ Account **{ig_username}** has been removed.")
+        await query.edit_message_text(f"✅ Account <b>{ig_username}</b> has been removed.")
 
 # --- Conversation Handlers for setting values ---
 async def get_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,7 +355,7 @@ async def get_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         chat_id = int(update.message.text)
         db_set_target_chat(ig_username, chat_id)
-        await update.message.reply_text(f"✅ Target chat for **{ig_username}** set to `{chat_id}`.")
+        await update.message.reply_html(f"✅ Target chat for <b>{ig_username}</b> set to <code>{chat_id}</code>.")
     except ValueError:
         await update.message.reply_text("Invalid ID. Please provide a numerical chat ID.")
     del context.user_data['ig_username_to_manage']
@@ -371,7 +369,7 @@ async def get_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Interval must be at least 5 minutes.")
             return AWAIT_INTERVAL
         db_set_periodic_interval(ig_username, interval)
-        await update.message.reply_text(f"✅ Check interval for **{ig_username}** set to `{interval}` minutes.")
+        await update.message.reply_html(f"✅ Check interval for <b>{ig_username}</b> set to <code>{interval}</code> minutes.")
     except ValueError:
         await update.message.reply_text("Invalid number. Please provide an interval in minutes.")
     del context.user_data['ig_username_to_manage']
@@ -396,7 +394,6 @@ async def monitor_and_upload(bot: Bot):
         
         for account in accounts_to_check:
             try:
-                # Check if it's time to run for this account
                 last_check = account.get('last_check', datetime.min)
                 interval = timedelta(minutes=account.get('interval_minutes', 60))
                 if datetime.now() - last_check < interval:
@@ -423,8 +420,10 @@ async def monitor_and_upload(bot: Bot):
                 await send_log_async(bot, owner_id, f"Found {len(new_reels)} new reel(s) for {ig_username}.")
                 for reel in new_reels:
                     filepath = ig_client.download_reel(reel['reel_pk'])
-                    caption = f"🎬 Reel from **{reel['from_user']}**\n" \
-                              f"💬 In chat: *{reel['ig_chat_name']}*\n\n"
+                    caption = (
+                        f"🎬 Reel from <b>{reel['from_user']}</b>\n"
+                        f"💬 In chat: <i>{reel['ig_chat_name']}</i>\n\n"
+                    )
                     
                     message_thread_id = None
                     if topic_mode:
@@ -433,7 +432,7 @@ async def monitor_and_upload(bot: Bot):
                             topic_id = db_get_or_create_topic(target_chat_id, topic_name)
                             if topic_id:
                                 message_thread_id = topic_id
-                            else: # Create topic on the fly
+                            else:
                                 new_topic = await bot.create_forum_topic(chat_id=target_chat_id, name=topic_name)
                                 message_thread_id = new_topic.message_thread_id
                                 db_save_topic(target_chat_id, topic_name, message_thread_id, ig_username)
@@ -441,13 +440,12 @@ async def monitor_and_upload(bot: Bot):
                             logger.error(f"Could not manage topic for {ig_username}: {e}")
                             await send_log_async(bot, owner_id, f"⚠️ Could not create/find topic for '{reel['ig_chat_name']}'. Sending to main group.")
 
-
                     with open(filepath, 'rb') as video_file:
                         await bot.send_video(
                             chat_id=target_chat_id,
                             video=video_file,
                             caption=caption,
-                            parse_mode='Markdown',
+                            parse_mode='HTML',
                             message_thread_id=message_thread_id
                         )
                     
@@ -460,23 +458,20 @@ async def monitor_and_upload(bot: Bot):
                 if 'owner_id' in account:
                     await send_log_async(bot, account['owner_id'], f"❌ ERROR for {account.get('ig_username', 'N/A')}: {e}")
         
-        await asyncio.sleep(60) # Check every minute to see if any account's interval is up
+        await asyncio.sleep(60)
 
 # ========================================================================================
 # =====                             MAIN APPLICATION SETUP                           =====
 # ========================================================================================
 
 def main():
-    # --- Start the Web Server (for Render) ---
     web_thread = threading.Thread(target=lambda: http.server.HTTPServer(("", int(os.environ.get("PORT", 8080))), http.server.SimpleHTTPRequestHandler).serve_forever())
     web_thread.daemon = True
     web_thread.start()
     logger.info(f"Web server started on port {os.environ.get('PORT', 8080)}.")
 
-    # --- Setup Telegram Bot ---
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Conversation Handlers
     add_account_handler = ConversationHandler(
         entry_points=[CommandHandler("addaccount", add_account_start)],
         states={AWAIT_SESSION_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_get_session_id)]},
@@ -485,15 +480,16 @@ def main():
     manage_account_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")],
         states={AWAIT_TARGET_CHAT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_target_chat_id)]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        per_message=False
     )
     set_interval_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")],
         states={AWAIT_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_interval)]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        per_message=False
     )
     
-    # Command Handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", start_command))
     application.add_handler(CommandHandler("ping", ping_command))
@@ -502,12 +498,10 @@ def main():
     application.add_handler(CommandHandler("myaccounts", my_accounts_command))
     application.add_handler(CommandHandler("logc", log_channel_command))
     
-    # Add Conversation Handlers
     application.add_handler(add_account_handler)
     application.add_handler(manage_account_handler)
     application.add_handler(set_interval_handler)
 
-    # Callback Query Handlers (for menus)
     application.add_handler(CallbackQueryHandler(manage_account_menu, pattern="^manage_"))
     application.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
     application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^toggletopic_"))
@@ -515,7 +509,6 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^remove_"))
     application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^confirmremove_"))
 
-    # --- Start Background Monitor ---
     async def run_monitor():
         await monitor_and_upload(application.bot)
 
@@ -524,7 +517,6 @@ def main():
     monitor_thread.start()
     logger.info("Instagram monitoring loop started in a background thread.")
 
-    # --- Run Bot ---
     logger.info("Telegram bot is now polling for updates...")
     application.run_polling()
 
