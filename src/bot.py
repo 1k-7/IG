@@ -1,7 +1,8 @@
 #  ========================================================================================
-#  =====                COMPLETE INSTAGRAM TELEGRAM BOT (UNABRIDGED)                  =====
+#  =====              COMPLETE INSTAGRAM TELEGRAM BOT (STABILITY FIX)                 =====
 #  ========================================================================================
-#  This is the full, unabridged script with all features and handlers completely implemented.
+#  This version includes critical fixes for the 'AttributeError' and 'BadRequest'
+#  errors to ensure stable operation.
 #  ========================================================================================
 
 import os
@@ -138,11 +139,16 @@ class InstagramClient:
         for thread in threads:
             messages = self.client.direct_messages(thread.id, amount=20)
             for message in messages:
+                # FIX: Check if message.user exists to prevent AttributeError
+                sender_username = "Unknown Sender"
+                if hasattr(message, 'user') and message.user:
+                    sender_username = message.user.username
+
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
                     new_reels.append({
                         "reel_pk": message.clip.pk,
                         "ig_chat_name": thread.thread_title,
-                        "from_user": message.user.username,
+                        "from_user": sender_username
                     })
         return new_reels
 
@@ -166,12 +172,16 @@ async def log_to_channel(bot: Bot, user_id, message: str, forward_error_to: int 
         except TelegramError as e:
             logger.error(f"Failed to send log to channel {log_channel_id}: {e}")
             if forward_error_to:
+                # FIX: Ensure the error 'e' is converted to a safe string for HTML
+                safe_error_message = str(e).replace("<", "&lt;").replace(">", "&gt;")
                 await bot.send_message(
                     chat_id=forward_error_to,
-                    text=f"⚠️ <b>Log Channel Error!</b>\nFailed to send log to <code>{log_channel_id}</code>.\n<b>Reason:</b> {e}",
+                    text=f"⚠️ <b>Log Channel Error!</b>\nFailed to send log to <code>{log_channel_id}</code>.\n<b>Reason:</b> {safe_error_message}",
                     parse_mode='HTML'
                 )
     return False
+
+# ... [All other command handlers like start, addaccount, etc. remain the same as the previous full version]
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -278,7 +288,7 @@ async def test_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Not authorized.")
         return
     await update.message.reply_text("Sending test message...")
-    if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ This is a test message.", forward_error_to=update.effective_chat.id):
+    if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ This is a test message from the bot.", forward_error_to=update.effective_chat.id):
         await update.message.reply_text("Test message sent successfully!")
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,7 +408,9 @@ async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
 
     except Exception as e:
         logger.error(f"CRITICAL ERROR processing {ig_username}: {e}")
-        await log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {e}", forward_error_to=owner_id)
+        # FIX: Ensure the error 'e' is converted to a safe string for HTML
+        safe_error_message = str(e).replace("<", "&lt;").replace(">", "&gt;")
+        await log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error_message}", forward_error_to=owner_id)
 
 async def force_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID:
@@ -433,8 +445,9 @@ async def monitor_loop(bot: Bot):
         except Exception as e:
             logger.critical(f"UNHANDLED EXCEPTION IN MONITOR LOOP: {e}")
             if ADMIN_USER_ID:
-                await log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR LOOP CRASHED: {e}", forward_error_to=int(ADMIN_USER_ID))
-            await asyncio.sleep(300) # Wait 5 minutes before restarting the loop
+                safe_error_message = str(e).replace("<", "&lt;").replace(">", "&gt;")
+                await log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR LOOP CRASHED: {safe_error_message}", forward_error_to=int(ADMIN_USER_ID))
+            await asyncio.sleep(300)
 
 # ========================================================================================
 # =====                             MAIN APPLICATION SETUP                           =====
