@@ -1,8 +1,7 @@
 #  ========================================================================================
-#  =====              COMPLETE INSTAGRAM TELEGRAM BOT (v4 - FINAL BUILD)              =====
+#  =====              COMPLETE INSTAGRAM TELEGRAM BOT (v6 - WITH /kill)               =====
 #  ========================================================================================
-#  This is the definitive, unabridged script with all features, fixes for HTML parsing,
-#  an elegant new caption format, and robust real-time upload progress.
+#  This version adds a /kill command for graceful shutdowns before redeployment.
 #  ========================================================================================
 
 import os
@@ -42,7 +41,7 @@ if not all([TELEGRAM_BOT_TOKEN, MONGO_URI, ADMIN_USER_ID]):
 # ========================================================================================
 # =====                                DATABASE LOGIC                                =====
 # ========================================================================================
-
+# ... [All database functions remain the same as the previous version]
 client = MongoClient(MONGO_URI)
 db = client.instagram_bot
 users_collection = db.users
@@ -112,25 +111,24 @@ def db_save_topic(chat_id, topic_name, topic_id, ig_username):
         {"$set": {"topic_id": topic_id, "ig_username": ig_username}},
         upsert=True
     )
-
 # ========================================================================================
 # =====                             INSTAGRAM CLIENT LOGIC                           =====
 # ========================================================================================
 
 class InstagramClient:
+    # ... [This class remains the same]
     def __init__(self, username, session_id):
         self.username = username
         self.client = Client()
         session_path = f"/tmp/{self.username}_session.json"
-        
         try:
             if os.path.exists(session_path): self.client.load_settings(session_path)
             self.client.login_by_sessionid(session_id)
             self.client.user_info_by_username(self.username)
             self.client.dump_settings(session_path)
-            logger.info(f"Successfully logged into Instagram as {self.username}")
+            logger.info(f"IG client for {self.username} initialized.")
         except Exception as e:
-            logger.error(f"Failed to initialize Instagram client for {self.username}: {e}")
+            logger.error(f"Failed to init IG client for {self.username}: {e}")
             raise
 
     def get_new_reels_from_dms(self):
@@ -139,17 +137,10 @@ class InstagramClient:
         for thread in threads:
             messages = self.client.direct_messages(thread.id, amount=20)
             for message in messages:
-                sender_username = "Unknown Sender"
-                if hasattr(message, 'user') and message.user:
-                    sender_username = message.user.username
-
+                sender_username = "Unknown"
+                if hasattr(message, 'user') and message.user: sender_username = message.user.username
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
-                    new_reels.append({
-                        "reel_pk": message.clip.pk,
-                        "ig_chat_name": thread.thread_title,
-                        "from_user": sender_username,
-                        "clip_obj": message.clip # Pass the full object
-                    })
+                    new_reels.append({"reel_pk": message.clip.pk, "ig_chat_name": thread.thread_title, "from_user": sender_username, "clip_obj": message.clip})
         return new_reels
 
     def download_reel(self, reel_pk):
@@ -162,6 +153,7 @@ class InstagramClient:
 # ========================================================================================
 
 class ProgressManager:
+    # ... [This class remains the same]
     def __init__(self, bot: Bot, chat_id: int, message_id: int, total_size: int, filename: str):
         self.bot, self.chat_id, self.message_id = bot, chat_id, message_id
         self.total_size, self.filename = total_size, filename
@@ -171,44 +163,26 @@ class ProgressManager:
         self.uploaded_size = current
         now = time.time()
         if now - self.last_update_time < 2: return
-
-        self.last_update_time = now
-        elapsed_time = now - self.start_time
+        self.last_update_time = now; elapsed_time = now - self.start_time
         if elapsed_time == 0: return
-
-        speed_mbps = (self.uploaded_size / elapsed_time) / (1024 * 1024)
-        percentage = (self.uploaded_size / self.total_size) * 100
-        
+        speed_mbps = (self.uploaded_size / elapsed_time) / (1024 * 1024); percentage = (self.uploaded_size / self.total_size) * 100
         eta_seconds = ((self.total_size - self.uploaded_size) / (self.uploaded_size / elapsed_time)) if self.uploaded_size > 0 else 0
         eta = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s" if eta_seconds > 0 else "..."
-
         bar = '■' * int(10 * self.uploaded_size / self.total_size) + '□' * (10 - int(10 * self.uploaded_size / self.total_size))
-
-        text = (
-            f"<b>Uploading Reel...</b>\n"
-            f"<code>{self.filename}</code>\n"
-            f"[{bar}] {percentage:.1f}%\n"
-            f"<code>{self.uploaded_size/1024/1024:.2f} / {self.total_size/1024/1024:.2f} MB</code>\n"
-            f"Speed: <code>{speed_mbps:.2f} MB/s</code> | ETA: <code>{eta}</code>"
-        )
-        try:
-            await self.bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, parse_mode='HTML')
-        except TelegramError: pass # Ignore if the message is the same
+        text = (f"<b>Uploading Reel...</b>\n<code>{self.filename}</code>\n[{bar}] {percentage:.1f}%\n"
+                f"<code>{self.uploaded_size/1024/1024:.2f} / {self.total_size/1024/1024:.2f} MB</code>\n"
+                f"Speed: <code>{speed_mbps:.2f} MB/s</code> | ETA: <code>{eta}</code>")
+        try: await self.bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, parse_mode='HTML')
+        except TelegramError: pass
 
 async def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption: str, message_thread_id: int = None):
-    filename = os.path.basename(video_path)
-    total_size = os.path.getsize(video_path)
-    
+    filename = os.path.basename(video_path); total_size = os.path.getsize(video_path)
     status_message = await bot.send_message(chat_id, f"Preparing to upload: {filename}", message_thread_id=message_thread_id)
     progress = ProgressManager(bot, chat_id, status_message.message_id, total_size, filename)
-
     try:
         with open(video_path, 'rb') as video_file:
-            await bot.send_video(
-                chat_id=chat_id, video=video_file, caption=caption, parse_mode='HTML',
-                message_thread_id=message_thread_id, write_timeout=120,
-                progress=progress.progress_callback
-            )
+            await bot.send_video(chat_id=chat_id, video=video_file, caption=caption, parse_mode='HTML',
+                                 message_thread_id=message_thread_id, write_timeout=120, progress=progress.progress_callback)
         await bot.delete_message(chat_id, status_message.message_id)
     except Exception as e:
         await bot.edit_message_text(f"❌ Upload failed for {filename}.\n<b>Reason:</b> {e}", chat_id, status_message.message_id, parse_mode='HTML')
@@ -219,39 +193,44 @@ async def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, ca
 # ========================================================================================
 
 (AWAIT_SESSION_ID, AWAIT_TARGET_CHAT_ID, AWAIT_INTERVAL) = range(3)
-
 async def log_to_channel(bot: Bot, user_id, message: str, forward_error_to: int = None):
     log_channel_id = db_get_log_channel(user_id)
     if log_channel_id:
-        try:
-            await bot.send_message(chat_id=log_channel_id, text=message)
-            return True
+        try: await bot.send_message(chat_id=log_channel_id, text=message)
         except TelegramError as e:
-            logger.error(f"Failed to send log to channel {log_channel_id}: {e}")
+            logger.error(f"Failed to send log to {log_channel_id}: {e}")
             if forward_error_to:
-                safe_error_message = str(e).replace("<", "&lt;").replace(">", "&gt;")
-                await bot.send_message(
-                    chat_id=forward_error_to,
-                    text=f"⚠️ <b>Log Channel Error!</b>\nFailed to send log to <code>{log_channel_id}</code>.\n<b>Reason:</b> {safe_error_message}",
-                    parse_mode='HTML'
-                )
-    return False
+                safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
+                await bot.send_message(chat_id=forward_error_to, text=f"⚠️ <b>Log Channel Error!</b>\nTo <code>{log_channel_id}</code>: {safe_error}", parse_mode='HTML')
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db_add_user(user.id)
+    user = update.effective_user; db_add_user(user.id)
     await update.message.reply_html(
         f"👋 <b>Hi {user.mention_html()}!</b>\n\nI am your Instagram DM Reels Bot.\n\n"
         "<b>Key Commands:</b>\n"
         "<code>/addaccount</code> - Link a new Instagram account.\n"
         "<code>/myaccounts</code> - View and manage your accounts.\n"
-        "<code>/forcecheck &lt;username&gt;</code> - (Admin) Force an immediate check for an account.\n"
-        "<code>/checkchat &lt;ID&gt;</code> - (Admin) Check permissions for a target chat.\n"
+        "<code>/forcecheck &lt;username&gt;</code> - (Admin) Force an immediate check.\n"
+        "<code>/checkchat &lt;ID&gt;</code> - (Admin) Check permissions for a chat.\n"
         "<code>/logc &lt;ID&gt;</code> - (Admin) Set a channel for bot logs.\n"
-        "<code>/ping</code> - Check if the bot is alive.\n"
-        "<code>/help</code> - Show this message."
+        "<code>/kill</code> - (Admin) Gracefully shut down the bot.\n" # New
+        "<code>/ping</code> - Check if the bot is alive."
     )
 
+# --- NEW COMMAND: /kill ---
+async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != ADMIN_USER_ID:
+        await update.message.reply_text("⛔ Not authorized.")
+        return
+    
+    await update.message.reply_text("Shutting down bot gracefully...")
+    logger.info("Shutdown command received. Terminating application.")
+    
+    # Schedule the shutdown to run after the current update is processed
+    asyncio.create_task(context.application.shutdown())
+
+
+# ... [All other handlers remain the same]
 async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please send the `sessionid` cookie from your Instagram account.\n\nSend /cancel to stop.")
     return AWAIT_SESSION_ID
@@ -312,7 +291,7 @@ async def log_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def test_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID: await update.message.reply_text("⛔ Not authorized."); return
     await update.message.reply_text("Sending test message...")
-    if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ Test.", forward_error_to=update.effective_chat.id):
+    if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ Test message.", forward_error_to=update.effective_chat.id):
         await update.message.reply_text("Test message sent!")
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,8 +300,8 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); action, ig_username = query.data.split("_", 1)
     context.user_data['ig_username_to_manage'] = ig_username
-    if action == "settarget": await query.message.reply_html(f"Send the target chat ID for <b>{ig_username}</b>."); return AWAIT_TARGET_CHAT_ID
-    elif action == "setinterval": await query.message.reply_html(f"Send the interval in minutes for <b>{ig_username}</b>."); return AWAIT_INTERVAL
+    if action == "settarget": await query.message.reply_html(f"Please send the target chat ID for <b>{ig_username}</b>."); return AWAIT_TARGET_CHAT_ID
+    elif action == "setinterval": await query.message.reply_html(f"Please send the interval in minutes for <b>{ig_username}</b>."); return AWAIT_INTERVAL
     elif action == "toggletopic":
         acc = db_get_account(ig_username); db_set_topic_mode(ig_username, not acc.get('topic_mode', False))
         await query.message.reply_text(f"Topic mode for {ig_username} is now {'enabled' if not acc.get('topic_mode') else 'disabled'}.")
@@ -363,13 +342,20 @@ async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat = await context.bot.get_chat(chat_id)
         me = await context.bot.get_me()
         member = await chat.get_member(me.id)
-        status = (f"<b>Permissions for: {chat.title} (<code>{chat_id}</code>)</b>\n\n"
-                  f"{'✅' if chat else '❌'} Chat Found\n"
-                  f"{'✅' if member.status in ['administrator', 'creator'] else '❌'} Bot is Admin\n"
-                  f"{'✅' if member.can_post_messages else '❌'} Can Post Messages\n"
-                  f"{'✅' if chat.is_forum else '⚠️'} Is Forum: {'Yes' if chat.is_forum else 'No'}\n"
-                  f"{'✅' if member.can_manage_topics else '❌'} Can Manage Topics")
-        await update.message.reply_html(status)
+        perms = []
+        if member.status in ['administrator', 'creator']:
+            perms.append(f"✅ Bot is an Administrator (`{member.status}`)")
+            perms.append(f"{'✅' if member.can_post_messages else '❌'} Can Post Messages")
+            perms.append(f"{'✅' if member.can_send_videos else '❌'} Can Send Videos")
+            perms.append(f"{'✅' if chat.is_forum else '⚠️'} Is a Forum: {'Yes' if chat.is_forum else 'No'}")
+            perms.append(f"{'✅' if member.can_manage_topics else '❌'} Can Manage Topics")
+        else:
+            perms.append(f"❌ Bot is just a Member (`{member.status}`)")
+            if chat.permissions:
+                perms.append(f"{'✅' if chat.permissions.can_send_messages else '❌'} Can Send Messages (Group Setting)")
+                perms.append(f"{'✅' if chat.permissions.can_send_videos else '❌'} Can Send Videos (Group Setting)")
+        status_text = f"<b>Permissions for: {chat.title} (<code>{chat_id}</code>)</b>\n\n" + "\n".join(perms)
+        await update.message.reply_html(status_text)
     except Exception as e: await update.message.reply_html(f"Could not check chat.\n<b>Error:</b> {e}")
 
 # ========================================================================================
@@ -468,7 +454,7 @@ def main():
         ("start", start_command), ("help", start_command), ("ping", ping_command),
         ("status", status_command), ("restart", restart_command), ("myaccounts", my_accounts_command),
         ("logc", log_channel_command), ("testlog", test_log_command), ("forcecheck", force_check_command),
-        ("checkchat", check_chat_command)
+        ("checkchat", check_chat_command), ("kill", kill_command) # Added /kill
     ]]
     
     application.add_handlers(conv_handlers + cmd_handlers)
