@@ -1,5 +1,5 @@
 python-telegram-bot
-instagrapi>=2.5.0
+instagrapi>=2.2.1
 pymongo[srv]
 python-dotenv
 requests
