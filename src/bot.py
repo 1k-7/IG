@@ -328,7 +328,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         new_mode = not account.get('topic_mode', False)
         db_set_topic_mode(ig_username, new_mode)
         await query.message.reply_text(f"Topic mode for {ig_username} has been {'enabled' if new_mode else 'disabled'}.")
-        # Create a new update object to refresh the menu correctly
         query.data = f"manage_{ig_username}"
         await manage_account_menu(update, context)
 
@@ -422,7 +421,7 @@ async def monitor_and_upload(bot: Bot):
                     filepath = ig_client.download_reel(reel['reel_pk'])
                     caption = (
                         f"🎬 Reel from <b>{reel['from_user']}</b>\n"
-                        f"💬 In chat: <i>{reel['ig_chat_name']}</i>\n\n"
+                        f"💬 In chat: <i>{reel['ig_chat_name']}</i>"
                     )
                     
                     message_thread_id = None
@@ -510,6 +509,8 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^confirmremove_"))
 
     async def run_monitor():
+        # A small delay to ensure the bot initializes before the first check
+        await asyncio.sleep(5)
         await monitor_and_upload(application.bot)
 
     monitor_thread = threading.Thread(target=lambda: asyncio.run(run_monitor()))
