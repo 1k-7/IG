@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 try:
     from instagrapi.types import ClipsMetadata
     # This directly modifies the data model to make original_sound_info optional
+    # using the correct 'model_fields' attribute for Pydantic v2.
     ClipsMetadata.model_fields['original_sound_info'].required = False
     logger.info("Successfully applied monkey-patch for instagrapi ValidationError.")
 except Exception as e:
