@@ -24,6 +24,7 @@ from telegram.error import TelegramError
 from instagrapi import Client
 from instagrapi.types import Media
 from instagrapi.exceptions import LoginRequired
+from pydantic import Field
 
 # --- Basic Setup and Logging ---
 logging.basicConfig(
@@ -35,7 +36,6 @@ logger = logging.getLogger(__name__)
 # --- ROBUST MONKEY-PATCH FOR INSTAGRAPI Pydantic v2 ---
 try:
     from instagrapi.types import ClipsMetadata
-    from pydantic import Field
     from typing import Optional
 
     # Overwrite the field to make it optional
@@ -156,14 +156,20 @@ class InstagramClient:
             raise
 
     def get_new_reels_from_dms(self):
-        new_reels = []
+        new_reels_data = []
         threads = self.client.direct_threads(amount=20)
         for thread in threads:
+            # Create a map of user IDs to usernames for this thread for efficiency
+            user_map = {str(user.pk): user.username for user in thread.users}
             messages = self.client.direct_messages(thread.id, amount=20)
             for message in messages:
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
-                    new_reels.append(message)
-        return new_reels
+                    sender_username = user_map.get(str(message.user_id), "Unknown")
+                    new_reels_data.append({
+                        "message": message,
+                        "sender_username": sender_username
+                    })
+        return new_reels_data
 
 # ========================================================================================
 # =====                  NEW DOWNLOAD & UPLOAD PROGRESS LOGIC                        =====
@@ -497,19 +503,20 @@ async def check_and_upload_account(context: ContextTypes.DEFAULT_TYPE):
     try:
         await log_to_channel(bot, owner_id, f"🔍 Checking {ig_username}...", forward_error_to=owner_id)
         ig_client = InstagramClient(ig_username, session_id)
-        new_reels = ig_client.get_new_reels_from_dms()
+        new_reels_data = ig_client.get_new_reels_from_dms()
         db_update_last_check(ig_username)
         
-        if not new_reels:
+        if not new_reels_data:
             await log_to_channel(bot, owner_id, f"✅ No new reels for {ig_username}.", forward_error_to=owner_id)
             return
         
-        await log_to_channel(bot, owner_id, f"Found {len(new_reels)} new reel(s) for {ig_username}.", forward_error_to=owner_id)
+        await log_to_channel(bot, owner_id, f"Found {len(new_reels_data)} new reel(s) for {ig_username}.", forward_error_to=owner_id)
         
-        for message in new_reels:
+        for reel_data in new_reels_data:
+            message = reel_data["message"]
+            sender_username = reel_data["sender_username"]
             clip = message.clip
             caption_text = (clip.caption_text or "").strip()
-            sender_username = message.user.username if message.user else "Unknown"
             
             caption = (
                 f"<i>Reel by <a href='https://instagram.com/{clip.user.username}'>{clip.user.full_name or clip.user.username}</a></i>\n\n"
@@ -554,13 +561,12 @@ async def force_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"Account '{ig_username}' not found.")
         return
     await update.message.reply_html(f"Manual check for <b>{ig_username}</b> triggered.")
-    context.application.job_queue.run_once(check_and_upload_account, 1, data=account)
+    context.application.job_queue.run_once(check_and_upload_account, 1, data=account, name=f"manual_check_{ig_username}")
 
 
 async def monitor_master_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Master job running: scheduling checks...")
+    logger.info("Master job running: scheduling checks for all accounts...")
     for account in db_get_all_accounts():
-        interval = account.get('interval_minutes', 60) * 60
         # Schedule a one-time job for each account
         context.application.job_queue.run_once(
             check_and_upload_account, 
@@ -583,8 +589,8 @@ def main():
     
     conv_handlers = [
         ConversationHandler(entry_points=[CommandHandler("addaccount", add_account_start)], states={AWAIT_SESSION_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_get_session_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
-        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")], states={AWAIT_TARGET_CHAT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_target_chat_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False),
-        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")], states={AWAIT_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_interval)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False)
+        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")], states={AWAIT_TARGET_CHAT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_target_chat_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
+        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")], states={AWAIT_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_interval)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)])
     ]
     
     cmd_handlers = [CommandHandler(cmd, func) for cmd, func in [
