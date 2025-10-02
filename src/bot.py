@@ -1,8 +1,8 @@
 #  ========================================================================================
-#  =====            COMPLETE INSTAGRAM TELEGRAM BOT (v11 - UNABRIDGED)                =====
+#  =====         COMPLETE INSTAGRAM TELEGRAM BOT (v11 - YT-DLP FALLBACK)              =====
 #  ========================================================================================
 #  This is the definitive, unabridged script with all features, including the yt-dlp
-#  fallback, written in a clear and explicit style with no unnecessary shortening.
+#  fallback mechanism to handle instagrapi validation errors.
 #  ========================================================================================
 
 import os
@@ -147,6 +147,7 @@ class InstagramClient:
                         sender_username = message.user.username
                     
                     if message.item_type == "clip":
+                        # Accessing message.clip can raise ValidationError
                         clip = message.clip
                         if not db_has_seen_reel(self.username, clip.pk):
                             new_reels.append({
@@ -155,8 +156,10 @@ class InstagramClient:
                             })
                 except ValidationError as e:
                     logger.warning(f"Validation error for a reel in chat '{thread.thread_title}'. Attempting fallback. Error: {e}")
+                    # Construct URL and add to list for yt-dlp fallback
                     if hasattr(message, 'clip') and hasattr(message.clip, 'code') and message.clip.code:
                         reel_url = f"https://www.instagram.com/reel/{message.clip.code}/"
+                        # We don't have a pk, so use URL as the unique identifier
                         if not db_has_seen_reel(self.username, reel_url):
                              new_reels.append({
                                  "reel_pk": reel_url, "ig_chat_name": thread.thread_title, "from_user": sender_username, 
@@ -174,9 +177,16 @@ def download_reel_with_ytdlp(reel_url):
     download_path = "/tmp/downloads"
     os.makedirs(download_path, exist_ok=True)
     
-    command = ["yt-dlp", "--quiet", "-o", f"{download_path}/%(id)s.%(ext)s", reel_url]
+    # Use yt-dlp to download the video. The output filename is unpredictable, so we'll find it.
+    command = [
+        "yt-dlp",
+        "--quiet",
+        "-o", f"{download_path}/%(id)s.%(ext)s",
+        reel_url
+    ]
     subprocess.run(command, check=True)
     
+    # Find the downloaded file
     file_id = reel_url.split("/reel/")[1].strip('/')
     for file in os.listdir(download_path):
         if file_id in file:
@@ -291,6 +301,7 @@ async def add_account_get_session_id(update: Update, context: ContextTypes.DEFAU
         temp_client = Client()
         temp_client.login_by_sessionid(session_id)
         ig_username = temp_client.user_info(temp_client.user_id).username
+        
         db_add_or_update_account(user_id, ig_username, session_id)
         await update.message.reply_html(f"✅ Success! Instagram account <b>{ig_username}</b> linked. Use <code>/myaccounts</code> to configure it.")
         return ConversationHandler.END
@@ -376,7 +387,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     action, ig_username = query.data.split("_", 1)
     context.user_data['ig_username_to_manage'] = ig_username
-
     if action == "settarget":
         await query.message.reply_html(f"Please send the target chat ID for <b>{ig_username}</b>.")
         return AWAIT_TARGET_CHAT_ID
@@ -576,7 +586,8 @@ async def monitor_loop(bot: Bot):
 
 def main():
     web_thread = threading.Thread(target=lambda: http.server.HTTPServer(("", int(os.environ.get("PORT", 8080))), http.server.SimpleHTTPRequestHandler).serve_forever())
-    web_thread.daemon = True; web_thread.start()
+    web_thread.daemon = True
+    web_thread.start()
     logger.info(f"Web server started on port {os.environ.get('PORT', 8080)}.")
     
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -586,6 +597,7 @@ def main():
         ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")], states={AWAIT_TARGET_CHAT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_target_chat_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False),
         ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")], states={AWAIT_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_interval)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False)
     ]
+    
     cmd_handlers = [CommandHandler(cmd, func) for cmd, func in [
         ("start", start_command), ("help", start_command), ("ping", ping_command),
         ("status", status_command), ("restart", restart_command), ("myaccounts", my_accounts_command),
@@ -599,7 +611,8 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback_handler))
 
     monitor_thread = threading.Thread(target=lambda: asyncio.run(monitor_loop(application.bot)))
-    monitor_thread.daemon = True; monitor_thread.start()
+    monitor_thread.daemon = True
+    monitor_thread.start()
     logger.info("Instagram monitoring loop started.")
 
     logger.info("Telegram bot is polling for updates...")
