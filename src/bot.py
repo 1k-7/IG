@@ -1,8 +1,8 @@
 #  ========================================================================================
-#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE & ROBUST)                     =====
+#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE, UNRESTRICTED & ROBUST)         =====
 #  ========================================================================================
-#  This version uses a stable set of older libraries and adds robust error handling
-#  for expired Instagram sessions to prevent crashes and provide clear user feedback.
+#  This final version uses a stable set of older libraries, removes all message and
+#  thread limits, and includes robust error handling for a fully functional bot.
 #  ========================================================================================
 
 import os
@@ -64,7 +64,7 @@ def db_get_all_accounts():
 def db_add_or_update_account(user_id, ig_username, ig_session_id):
     accounts_collection.update_one(
         {"owner_id": user_id, "ig_username": ig_username},
-        {"$set": {"ig_session_id": ig_session_id, "last_check": datetime.now() - timedelta(hours=1), "interval_minutes": 60, "is_active": True}},
+        {"$set": {"ig_session_id": ig_session_id, "last_check": datetime.now() - timedelta(hours=24), "interval_minutes": 60, "is_active": True}},
         upsert=True
     )
 
@@ -80,9 +80,6 @@ def db_remove_account(user_id, ig_username):
 
 def db_set_target_chat(ig_username, chat_id):
     accounts_collection.update_one({"ig_username": ig_username}, {"$set": {"target_chat_id": chat_id}})
-
-def db_set_topic_mode(ig_username, topic_mode_enabled):
-    accounts_collection.update_one({"ig_username": ig_username}, {"$set": {"topic_mode": topic_mode_enabled}})
 
 def db_set_periodic_interval(ig_username, interval_minutes):
     accounts_collection.update_one({"ig_username": ig_username}, {"$set": {"interval_minutes": interval_minutes}})
@@ -118,10 +115,12 @@ class InstagramClient:
 
     def get_new_reels_from_dms(self):
         new_reels_data = []
-        # Increased amount to fetch more threads, solving the "No new reels" issue
-        threads = self.client.direct_threads(amount=100) 
+        # Fetch ALL threads. This can be slow on accounts with many chats but ensures everything is checked.
+        threads = self.client.direct_threads() 
         for thread in threads:
-            for message in thread.messages:
+            # Fetch ALL messages in each thread.
+            messages = self.client.direct_messages(thread.id)
+            for message in messages:
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
                     sender = message.user
                     if sender: # Ensure we have a sender
@@ -211,7 +210,6 @@ def start_command(update: Update, context: CallbackContext):
         "<code>/addaccount</code> - Link a new Instagram account.\n"
         "<code>/myaccounts</code> - View and manage your accounts.\n"
         "<code>/forcecheck &lt;username&gt;</code> - Force an immediate check.\n"
-        "<code>/checkchat &lt;ID&gt;</code> - Check permissions for a chat.\n"
         "<code>/logc &lt;ID&gt;</code> - Set a channel for bot logs.\n"
         "<code>/kill</code> - Instantly shut down the bot.\n\n"
         "<b>Public Commands:</b>\n"
@@ -271,8 +269,7 @@ def manage_account_menu(update: Update, context: CallbackContext):
     text = (
         f"<b>Managing: {ig_username}</b>\n\n"
         f"Target Chat: <code>{account.get('target_chat_id', 'Not Set')}</code>\n"
-        f"Check Interval: <code>{account.get('interval_minutes', 60)}</code> mins\n"
-        f"Topic Mode: {'✅ Enabled' if account.get('topic_mode') else '❌ Disabled'}"
+        f"Check Interval: <code>{account.get('interval_minutes', 60)}</code> mins"
     )
     keyboard = [
         [InlineKeyboardButton("🎯 Set Target Chat", callback_data=f"settarget_{ig_username}")],
@@ -327,7 +324,7 @@ def button_callback_handler(update: Update, context: CallbackContext):
         return AWAIT_INTERVAL
     elif action == "cleardata":
         db_clear_seen_reels(ig_username)
-        query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared. New reels will be downloaded on the next check.")
+        query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared. All reels will be downloaded on the next check.")
         query.data = f"manage_{ig_username}"
         manage_account_menu(update, context)
     elif action == "remove":
