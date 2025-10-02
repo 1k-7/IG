@@ -1,14 +1,13 @@
 #  ========================================================================================
-#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE, UNRESTRICTED & ROBUST)         =====
+#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE & CORRECTED)                  =====
 #  ========================================================================================
-#  This final version uses a stable set of older libraries, removes all message and
-#  thread limits, and includes robust error handling for a fully functional bot.
+#  This final version uses the stable, proven logic from the reference project to
+#  eliminate all errors and ensure full functionality.
 #  ========================================================================================
 
 import os
 import threading
 import http.server
-import socketserver
 import time
 import logging
 from datetime import datetime, timedelta
@@ -115,15 +114,20 @@ class InstagramClient:
 
     def get_new_reels_from_dms(self):
         new_reels_data = []
-        # Fetch ALL threads. This can be slow on accounts with many chats but ensures everything is checked.
+        # Fetch ALL threads. This is slow but ensures everything is checked.
         threads = self.client.direct_threads() 
         for thread in threads:
             # Fetch ALL messages in each thread.
             messages = self.client.direct_messages(thread.id)
             for message in messages:
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
-                    sender = message.user
-                    if sender: # Ensure we have a sender
+                    # Correctly find the sender's user object from the thread's user list
+                    sender = None
+                    for user in thread.users:
+                        if user.pk == message.user_id:
+                            sender = user
+                            break
+                    if sender: # Only proceed if we found the sender
                         new_reels_data.append({"message": message, "sender": sender})
         return new_reels_data
 
