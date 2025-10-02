@@ -10,7 +10,6 @@ import threading
 import http.server
 import socketserver
 import time
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from pymongo import MongoClient
@@ -112,11 +111,9 @@ def db_save_topic(chat_id, topic_name, topic_id, ig_username):
         {"$set": {"topic_id": topic_id, "ig_username": ig_username}},
         upsert=True
     )
-
 # ========================================================================================
 # =====                             INSTAGRAM CLIENT LOGIC                           =====
 # ========================================================================================
-
 class InstagramClient:
     def __init__(self, username, session_id):
         self.username = username
@@ -126,15 +123,12 @@ class InstagramClient:
             if os.path.exists(session_path):
                 self.client.load_settings(session_path)
             self.client.login_by_sessionid(session_id)
-            self.client.user_info_by_username(self.username) # This also validates the session
+            self.client.get_timeline_feed() # Check if session is valid
+            logger.info(f"IG client for {self.username} initialized and session validated.")
             self.client.dump_settings(session_path)
-            logger.info(f"IG client for {self.username} initialized.")
         except LoginRequired:
-             # If session is invalid, try a fresh login
-            logger.warning(f"Session for {self.username} is invalid. Attempting fresh login.")
-            self.client.login(username, os.environ.get("IG_PASSWORD")) # Assuming password might be needed
-            self.client.dump_settings(session_path)
-            logger.info(f"IG client for {self.username} re-initialized with fresh login.")
+            logger.warning(f"Session for {self.username} is invalid. A fresh login is required.")
+            raise LoginRequired("Session invalid, please re-add account.")
         except Exception as e:
             logger.error(f"Failed to init IG client for {self.username}: {e}")
             raise
@@ -148,10 +142,10 @@ class InstagramClient:
                     new_reels_data.append(message)
         return new_reels_data
 
-    def download_reel(self, reel):
+    def download_reel(self, reel_pk):
         download_path = "/tmp/downloads"
         os.makedirs(download_path, exist_ok=True)
-        return self.client.video_download(reel.pk, folder=download_path)
+        return self.client.video_download(reel_pk, folder=download_path)
 
 # ========================================================================================
 # =====                             UPLOAD PROGRESS LOGIC                            =====
@@ -187,7 +181,7 @@ class ProgressManager:
 
 def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption: str, message_thread_id: int = None):
     filename = os.path.basename(str(video_path))
-    total__size = os.path.getsize(video_path)
+    total_size = os.path.getsize(video_path)
     status_message = bot.send_message(chat_id, f"Preparing to upload: {filename}", message_thread_id=message_thread_id)
     progress = ProgressManager(bot, chat_id, status_message.message_id, total_size, filename)
     try:
@@ -417,10 +411,9 @@ def check_chat_command(update: Update, context: CallbackContext):
         me = context.bot.get_me()
         member = chat.get_member(me.id)
         
-        perms = [f"<b>Chat Name:</b> {chat.title}", f"<b>Chat Type:</b> {chat.type}", f"<b>Is Forum:</b> {'✅ Yes' if chat.is_forum else '❌ No'}"]
+        perms = [f"<b>Chat Name:</b> {chat.title}", f"<b>Chat Type:</b> {chat.type}"]
         perms.append(f"\n<b>Bot's Status:</b>")
         perms.append(f"{'✅' if member.status in ['administrator', 'creator'] else '❌'} Is an Administrator (`{member.status}`)")
-
         perms.append(f"\n<b>Live Action Tests:</b>")
         try:
             test_msg = context.bot.send_message(chat_id=chat_id, text="...checking permissions...")
@@ -428,15 +421,7 @@ def check_chat_command(update: Update, context: CallbackContext):
             perms.append("✅ Can Send & Delete Messages")
         except Exception as e:
             perms.append(f"❌ Failed to Send/Delete Messages: {e}")
-            
-        if chat.is_forum:
-            try:
-                new_topic = context.bot.create_forum_topic(chat_id=chat_id, name="Bot Permission Test")
-                context.bot.delete_forum_topic(chat_id=chat_id, message_thread_id=new_topic.message_thread_id)
-                perms.append("✅ Can Create & Delete Topics")
-            except Exception as e:
-                perms.append(f"❌ Failed to Manage Topics: {e}")
-        
+
         status_text = f"<b>Permissions Check for <code>{chat_id}</code></b>\n\n" + "\n".join(perms)
         preliminary_message.edit_text(status_text, parse_mode='HTML')
         
@@ -449,7 +434,7 @@ def check_chat_command(update: Update, context: CallbackContext):
 
 def check_and_upload_account(context: CallbackContext):
     bot = context.bot
-    account = context.job.data
+    account = context.job.context
     owner_id = account['owner_id']
     ig_username = account.get('ig_username')
     session_id = account.get('ig_session_id')
@@ -481,21 +466,8 @@ def check_and_upload_account(context: CallbackContext):
                 f"<b>Shared by:</b> {sender.username}"
             )
             
-            message_thread_id = None
-            if topic_mode:
-                try:
-                    topic_name = "Reels" # Simplified topic name
-                    topic_id = db_get_or_create_topic(target_chat_id, topic_name)
-                    if not topic_id:
-                        new_topic = bot.create_forum_topic(chat_id=target_chat_id, name=topic_name)
-                        topic_id = new_topic.message_thread_id
-                        db_save_topic(target_chat_id, topic_name, topic_id, ig_username)
-                    message_thread_id = topic_id
-                except Exception as e:
-                    log_to_channel(bot, owner_id, f"⚠️ Topic Error: {e}", forward_error_to=owner_id)
-
-            filepath = ig_client.download_reel(clip)
-            upload_video_with_progress(bot, target_chat_id, filepath, caption, message_thread_id)
+            filepath = ig_client.download_reel(clip.pk)
+            upload_video_with_progress(bot, target_chat_id, filepath, caption)
             os.remove(filepath)
 
             db_add_seen_reel(ig_username, clip.pk)
@@ -520,17 +492,18 @@ def force_check_command(update: Update, context: CallbackContext):
         update.message.reply_text(f"Account '{ig_username}' not found.")
         return
     update.message.reply_html(f"Manual check for <b>{ig_username}</b> triggered.")
-    context.job_queue.run_once(check_and_upload_account, 1, context=account)
+    context.job_queue.run_once(check_and_upload_account, 1, context=account, name=f"manual_check_{ig_username}")
 
 def monitor_master_job(context: CallbackContext):
     logger.info("Master job running: scheduling checks for all accounts...")
     for account in db_get_all_accounts():
-        context.job_queue.run_once(
-            check_and_upload_account, 
-            when=1, 
-            context=account,
-            name=f"check_{account['ig_username']}"
-        )
+        if datetime.now() - account.get('last_check', datetime.min) >= timedelta(minutes=account.get('interval_minutes', 60)):
+            context.job_queue.run_once(
+                check_and_upload_account, 
+                when=1, 
+                context=account,
+                name=f"check_{account['ig_username']}"
+            )
 
 # ========================================================================================
 # =====                             MAIN APPLICATION SETUP                           =====
@@ -545,17 +518,26 @@ def main():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("addaccount", add_account_start)],
-        states={
-            AWAIT_SESSION_ID: [MessageHandler(Filters.text & ~Filters.command, add_account_get_session_id)],
-            AWAIT_TARGET_CHAT_ID: [MessageHandler(Filters.text & ~Filters.command, get_target_chat_id)],
-            AWAIT_INTERVAL: [MessageHandler(Filters.text & ~Filters.command, get_interval)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    add_account_conv = ConversationHandler(
+        entry_points=[CommandHandler("addaccount", add_account_start)], 
+        states={AWAIT_SESSION_ID: [MessageHandler(Filters.text & ~Filters.command, add_account_get_session_id)]}, 
+        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+    )
+    set_target_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")],
+        states={AWAIT_TARGET_CHAT_ID: [MessageHandler(Filters.text & ~Filters.command, get_target_chat_id)]},
+        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+    )
+    set_interval_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")],
+        states={AWAIT_INTERVAL: [MessageHandler(Filters.text & ~Filters.command, get_interval)]},
+        fallbacks=[CommandHandler("cancel", cancel_conversation)]
     )
 
-    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(add_account_conv)
+    dispatcher.add_handler(set_target_conv)
+    dispatcher.add_handler(set_interval_conv)
+
     dispatcher.add_handler(CommandHandler("start", start_command))
     dispatcher.add_handler(CommandHandler("help", start_command))
     dispatcher.add_handler(CommandHandler("ping", ping_command))
@@ -567,6 +549,7 @@ def main():
     dispatcher.add_handler(CommandHandler("forcecheck", force_check_command))
     dispatcher.add_handler(CommandHandler("checkchat", check_chat_command))
     dispatcher.add_handler(CommandHandler("kill", kill_command))
+    
     dispatcher.add_handler(CallbackQueryHandler(manage_account_menu, pattern="^manage_"))
     dispatcher.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
