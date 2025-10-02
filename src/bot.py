@@ -1,8 +1,8 @@
 #  ========================================================================================
-#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE LEGACY VERSION)               =====
+#  =====        COMPLETE INSTAGRAM TELEGRAM BOT (STABLE & ROBUST)                     =====
 #  ========================================================================================
-#  This version has been reverted to a stable set of older libraries to ensure
-#  compatibility with the Instagram API and resolve all dependency conflicts.
+#  This version uses a stable set of older libraries and adds robust error handling
+#  for expired Instagram sessions to prevent crashes and provide clear user feedback.
 #  ========================================================================================
 
 import os
@@ -101,16 +101,6 @@ def db_has_seen_reel(ig_username, reel_pk):
 def db_clear_seen_reels(ig_username):
     seen_reels_collection.delete_many({"ig_username": ig_username})
 
-def db_get_or_create_topic(chat_id, topic_name):
-    topic = topics_collection.find_one({"chat_id": chat_id, "name": topic_name})
-    return topic.get("topic_id") if topic else None
-
-def db_save_topic(chat_id, topic_name, topic_id, ig_username):
-    topics_collection.update_one(
-        {"chat_id": chat_id, "name": topic_name},
-        {"$set": {"topic_id": topic_id, "ig_username": ig_username}},
-        upsert=True
-    )
 # ========================================================================================
 # =====                             INSTAGRAM CLIENT LOGIC                           =====
 # ========================================================================================
@@ -119,19 +109,14 @@ class InstagramClient:
         self.username = username
         self.client = Client()
         session_path = f"/tmp/{self.username}_session.json"
-        try:
-            if os.path.exists(session_path):
-                self.client.load_settings(session_path)
-            self.client.login_by_sessionid(session_id)
-            self.client.get_timeline_feed() # Check if session is valid
-            logger.info(f"IG client for {self.username} initialized and session validated.")
-            self.client.dump_settings(session_path)
-        except LoginRequired:
-            logger.warning(f"Session for {self.username} is invalid. A fresh login is required.")
-            raise LoginRequired("Session invalid, please re-add account.")
-        except Exception as e:
-            logger.error(f"Failed to init IG client for {self.username}: {e}")
-            raise
+        
+        if os.path.exists(session_path):
+            self.client.load_settings(session_path)
+
+        self.client.login_by_sessionid(session_id)
+        self.client.get_timeline_feed() # This is a lightweight check to see if the session is valid
+        self.client.dump_settings(session_path)
+        logger.info(f"IG client for {self.username} initialized and session validated.")
 
     def get_new_reels_from_dms(self):
         new_reels_data = []
@@ -151,6 +136,7 @@ class InstagramClient:
 # =====                             UPLOAD PROGRESS LOGIC                            =====
 # ========================================================================================
 
+# This section remains unchanged as it was working correctly.
 class ProgressManager:
     def __init__(self, bot: Bot, chat_id: int, message_id: int, total_size: int, filename: str):
         self.bot, self.chat_id, self.message_id = bot, chat_id, message_id
@@ -195,7 +181,6 @@ def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption:
     except Exception as e:
         bot.edit_message_text(f"❌ Upload failed for {filename}.\n<b>Reason:</b> {e}", chat_id, status_message.message_id, parse_mode='HTML')
         raise
-
 # ========================================================================================
 # =====                            TELEGRAM HANDLERS LOGIC                           =====
 # ========================================================================================
@@ -391,43 +376,6 @@ def get_interval(update: Update, context: CallbackContext):
     del context.user_data['ig_username_to_manage']
     return ConversationHandler.END
 
-def check_chat_command(update: Update, context: CallbackContext):
-    if str(update.effective_user.id) != ADMIN_USER_ID:
-        update.message.reply_text("⛔ Not authorized.")
-        return
-    if not context.args:
-        update.message.reply_text("Usage: /checkchat <chat_id>")
-        return
-    try:
-        chat_id = int(context.args[0])
-    except ValueError:
-        update.message.reply_text("Error: Chat ID must be a number.")
-        return
-    
-    preliminary_message = update.message.reply_text(f"Checking permissions for chat ID: {chat_id}...")
-    
-    try:
-        chat = context.bot.get_chat(chat_id)
-        me = context.bot.get_me()
-        member = chat.get_member(me.id)
-        
-        perms = [f"<b>Chat Name:</b> {chat.title}", f"<b>Chat Type:</b> {chat.type}"]
-        perms.append(f"\n<b>Bot's Status:</b>")
-        perms.append(f"{'✅' if member.status in ['administrator', 'creator'] else '❌'} Is an Administrator (`{member.status}`)")
-        perms.append(f"\n<b>Live Action Tests:</b>")
-        try:
-            test_msg = context.bot.send_message(chat_id=chat_id, text="...checking permissions...")
-            context.bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
-            perms.append("✅ Can Send & Delete Messages")
-        except Exception as e:
-            perms.append(f"❌ Failed to Send/Delete Messages: {e}")
-
-        status_text = f"<b>Permissions Check for <code>{chat_id}</code></b>\n\n" + "\n".join(perms)
-        preliminary_message.edit_text(status_text, parse_mode='HTML')
-        
-    except Exception as e:
-        preliminary_message.edit_text(f"Could not check chat.\n<b>Error:</b> {e}", parse_mode='HTML')
-
 # ========================================================================================
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
 # ========================================================================================
@@ -439,7 +387,6 @@ def check_and_upload_account(context: CallbackContext):
     ig_username = account.get('ig_username')
     session_id = account.get('ig_session_id')
     target_chat_id = account.get('target_chat_id')
-    topic_mode = account.get('topic_mode', False)
     
     if not all([ig_username, session_id, target_chat_id]): return
     
@@ -475,6 +422,8 @@ def check_and_upload_account(context: CallbackContext):
         
         log_to_channel(bot, owner_id, f"🎉 Finished all uploads for {ig_username}.", forward_error_to=owner_id)
 
+    except LoginRequired:
+        log_to_channel(bot, owner_id, f"🚨 SESSION EXPIRED for {ig_username}. Please use /addaccount to link it again.", forward_error_to=owner_id)
     except Exception as e:
         safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
         log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error}", forward_error_to=owner_id)
@@ -518,26 +467,21 @@ def main():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
-    add_account_conv = ConversationHandler(
-        entry_points=[CommandHandler("addaccount", add_account_start)], 
-        states={AWAIT_SESSION_ID: [MessageHandler(Filters.text & ~Filters.command, add_account_get_session_id)]}, 
-        fallbacks=[CommandHandler("cancel", cancel_conversation)]
-    )
-    set_target_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")],
-        states={AWAIT_TARGET_CHAT_ID: [MessageHandler(Filters.text & ~Filters.command, get_target_chat_id)]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)]
-    )
-    set_interval_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")],
-        states={AWAIT_INTERVAL: [MessageHandler(Filters.text & ~Filters.command, get_interval)]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("addaccount", add_account_start),
+            CallbackQueryHandler(button_callback_handler, pattern="^settarget_"),
+            CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")
+        ],
+        states={
+            AWAIT_SESSION_ID: [MessageHandler(Filters.text & ~Filters.command, add_account_get_session_id)],
+            AWAIT_TARGET_CHAT_ID: [MessageHandler(Filters.text & ~Filters.command, get_target_chat_id)],
+            AWAIT_INTERVAL: [MessageHandler(Filters.text & ~Filters.command, get_interval)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
 
-    dispatcher.add_handler(add_account_conv)
-    dispatcher.add_handler(set_target_conv)
-    dispatcher.add_handler(set_interval_conv)
-
+    dispatcher.add_handler(conv_handler)
     dispatcher.add_handler(CommandHandler("start", start_command))
     dispatcher.add_handler(CommandHandler("help", start_command))
     dispatcher.add_handler(CommandHandler("ping", ping_command))
