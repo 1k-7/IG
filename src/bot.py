@@ -204,7 +204,7 @@ async def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, ca
             await bot.send_video(
                 chat_id=chat_id, video=video_file, caption=caption, parse_mode='HTML',
                 message_thread_id=message_thread_id, write_timeout=120,
-                progress_callback=progress.progress_callback
+                progress=progress.progress_callback
             )
         await bot.delete_message(chat_id, status_message.message_id)
     except Exception as e:
