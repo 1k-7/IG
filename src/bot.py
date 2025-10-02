@@ -37,13 +37,15 @@ logger = logging.getLogger(__name__)
 # --- MONKEY-PATCH FOR INSTAGRAPI VALIDATION ERROR ---
 try:
     from instagrapi.types import ClipsMetadata
-    # This directly modifies the data model to make original_sound_info optional
-    # using the correct 'model_fields' attribute for Pydantic v2.
+    from typing import Optional
+
+    ClipsMetadata.model_fields['original_sound_info'].annotation = Optional[ClipsMetadata.model_fields['original_sound_info'].annotation]
     ClipsMetadata.model_fields['original_sound_info'].required = False
     logger.info("Successfully applied monkey-patch for instagrapi ValidationError.")
 except Exception as e:
     logger.error(f"Could not apply monkey-patch for instagrapi: {e}")
 # --- END OF MONKEY-PATCH ---
+
 
 # --- Environment Variables ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
