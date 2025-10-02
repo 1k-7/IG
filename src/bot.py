@@ -18,8 +18,8 @@ from pymongo import MongoClient
 from urllib.parse import quote_plus
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ConversationHandler,
-    MessageHandler, filters, ContextTypes, CallbackQueryHandler
+    Updater, CommandHandler, ConversationHandler,
+    MessageHandler, Filters, CallbackContext, CallbackQueryHandler
 )
 from telegram.error import TelegramError
 from instagrapi import Client
@@ -172,7 +172,7 @@ class ProgressManager:
         self.total_size, self.filename = total_size, filename
         self.uploaded_size, self.start_time, self.last_update_time = 0, time.time(), 0
 
-    async def progress_callback(self, current, total):
+    def progress_callback(self, current, total):
         self.uploaded_size = current
         now = time.time()
         if now - self.last_update_time < 2: return
@@ -190,25 +190,25 @@ class ProgressManager:
             f"Speed: <code>{speed_mbps:.2f} MB/s</code> | ETA: <code>{eta}</code>"
         )
         try:
-            await self.bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, parse_mode='HTML')
+            self.bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, parse_mode='HTML')
         except TelegramError:
             pass
 
-async def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption: str, message_thread_id: int = None):
+def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption: str, message_thread_id: int = None):
     filename = os.path.basename(str(video_path))
     total_size = os.path.getsize(video_path)
-    status_message = await bot.send_message(chat_id, f"Preparing to upload: {filename}", message_thread_id=message_thread_id)
+    status_message = bot.send_message(chat_id, f"Preparing to upload: {filename}", message_thread_id=message_thread_id)
     progress = ProgressManager(bot, chat_id, status_message.message_id, total_size, filename)
     try:
         with open(video_path, 'rb') as video_file:
-            await bot.send_video(
+            bot.send_video(
                 chat_id=chat_id, video=video_file, caption=caption, parse_mode='HTML',
-                message_thread_id=message_thread_id, write_timeout=120,
+                message_thread_id=message_thread_id, timeout=120,
                 progress=progress.progress_callback
             )
-        await bot.delete_message(chat_id, status_message.message_id)
+        bot.delete_message(chat_id, status_message.message_id)
     except Exception as e:
-        await bot.edit_message_text(f"❌ Upload failed for {filename}.\n<b>Reason:</b> {e}", chat_id, status_message.message_id, parse_mode='HTML')
+        bot.edit_message_text(f"❌ Upload failed for {filename}.\n<b>Reason:</b> {e}", chat_id, status_message.message_id, parse_mode='HTML')
         raise
 
 # ========================================================================================
@@ -217,25 +217,25 @@ async def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, ca
 
 (AWAIT_SESSION_ID, AWAIT_TARGET_CHAT_ID, AWAIT_INTERVAL) = range(3)
 
-async def log_to_channel(bot: Bot, user_id, message: str, forward_error_to: int = None):
+def log_to_channel(bot: Bot, user_id, message: str, forward_error_to: int = None):
     log_channel_id = db_get_log_channel(user_id)
     if log_channel_id:
         try:
-            await bot.send_message(chat_id=log_channel_id, text=message)
+            bot.send_message(chat_id=log_channel_id, text=message)
         except TelegramError as e:
             logger.error(f"Failed to send log to {log_channel_id}: {e}")
             if forward_error_to:
                 safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
-                await bot.send_message(
+                bot.send_message(
                     chat_id=forward_error_to,
                     text=f"⚠️ <b>Log Channel Error!</b>\nTo <code>{log_channel_id}</code>: {safe_error}",
                     parse_mode='HTML'
                 )
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start_command(update: Update, context: CallbackContext):
     user = update.effective_user
     db_add_user(user.id)
-    await update.message.reply_html(
+    update.message.reply_html(
         f"👋 <b>Hi {user.mention_html()}!</b>\n\nI am your Instagram DM Reels Bot.\n\n"
         "<b>Admin Commands:</b>\n"
         "<code>/addaccount</code> - Link a new Instagram account.\n"
@@ -249,53 +249,53 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<code>/help</code> - Show this message."
     )
 
-async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def kill_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
-    await update.message.reply_text("Shutting down bot gracefully...")
+    update.message.reply_text("Shutting down bot gracefully...")
     logger.info("Shutdown command received. Terminating application.")
-    asyncio.create_task(context.application.shutdown())
+    threading.Thread(target=context.dispatcher.updater.stop).start()
 
-async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Please send the `sessionid` cookie from your Instagram account.\n\nSend /cancel to stop.")
+def add_account_start(update: Update, context: CallbackContext):
+    update.message.reply_text("Please send the `sessionid` cookie from your Instagram account.\n\nSend /cancel to stop.")
     return AWAIT_SESSION_ID
 
-async def add_account_get_session_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def add_account_get_session_id(update: Update, context: CallbackContext):
     session_id = update.message.text
     user_id = update.effective_user.id
     try:
-        await update.message.reply_text("Validating session and logging in...")
+        update.message.reply_text("Validating session and logging in...")
         temp_client = Client()
         temp_client.login_by_sessionid(session_id)
         ig_username = temp_client.user_info(temp_client.user_id).username
         
         db_add_or_update_account(user_id, ig_username, session_id)
-        await update.message.reply_html(f"✅ Success! Instagram account <b>{ig_username}</b> linked. Use <code>/myaccounts</code> to configure it.")
+        update.message.reply_html(f"✅ Success! Instagram account <b>{ig_username}</b> linked. Use <code>/myaccounts</code> to configure it.")
         return ConversationHandler.END
     except Exception as e:
-        await update.message.reply_html(f"❌ Login failed: {e}.\n\nPlease check your session ID, or /cancel.")
+        update.message.reply_html(f"❌ Login failed: {e}.\n\nPlease check your session ID, or /cancel.")
         return AWAIT_SESSION_ID
 
-async def my_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def my_accounts_command(update: Update, context: CallbackContext):
     accounts = db_get_user_accounts(update.effective_user.id)
     if not accounts:
-        await update.message.reply_text("You haven't linked any Instagram accounts. Use /addaccount.")
+        update.message.reply_text("You haven't linked any Instagram accounts. Use /addaccount.")
         return
     keyboard = [[InlineKeyboardButton(a['ig_username'], callback_data=f"manage_{a['ig_username']}")] for a in accounts]
     text = "Select an Instagram account to manage:"
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def manage_account_menu(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     ig_username = query.data.split("_")[1]
     account = db_get_account(ig_username)
     if not account:
-        await query.edit_message_text("This account no longer exists.")
+        query.edit_message_text("This account no longer exists.")
         return
     text = (
         f"<b>Managing: {ig_username}</b>\n\n"
@@ -311,120 +311,120 @@ async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("❌ Remove Account", callback_data=f"remove_{ig_username}")],
         [InlineKeyboardButton("⬅️ Back to Accounts", callback_data="myaccounts")]
     ]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
-async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Pong! 🏓")
+def ping_command(update: Update, context: CallbackContext):
+    update.message.reply_text("Pong! 🏓")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot is running.")
+def status_command(update: Update, context: CallbackContext):
+    update.message.reply_text("✅ Bot is running.")
 
-async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def restart_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
-    await update.message.reply_text("Restarting...")
+    update.message.reply_text("Restarting...")
 
-async def log_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def log_channel_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /logc <ID>")
+        update.message.reply_text("Usage: /logc <ID>")
         return
     try:
         db_set_log_channel(int(ADMIN_USER_ID), int(context.args[0]))
-        await update.message.reply_html(f"✅ Log channel set to <code>{context.args[0]}</code>.")
+        update.message.reply_html(f"✅ Log channel set to <code>{context.args[0]}</code>.")
     except (IndexError, ValueError):
-        await update.message.reply_text("Invalid ID.")
+        update.message.reply_text("Invalid ID.")
 
-async def test_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def test_log_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
-    await update.message.reply_text("Sending test message...")
-    if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ Test message.", forward_error_to=update.effective_chat.id):
-        await update.message.reply_text("Test message sent!")
+    update.message.reply_text("Sending test message...")
+    if log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ Test message.", forward_error_to=update.effective_chat.id):
+        update.message.reply_text("Test message sent!")
 
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled.")
+def cancel_conversation(update: Update, context: CallbackContext):
+    update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
-async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     action, ig_username = query.data.split("_", 1)
     context.user_data['ig_username_to_manage'] = ig_username
     if action == "settarget":
-        await query.message.reply_html(f"Please send the target chat ID for <b>{ig_username}</b>.")
+        query.message.reply_html(f"Please send the target chat ID for <b>{ig_username}</b>.")
         return AWAIT_TARGET_CHAT_ID
     elif action == "setinterval":
-        await query.message.reply_html(f"Please send the interval in minutes for <b>{ig_username}</b>.")
+        query.message.reply_html(f"Please send the interval in minutes for <b>{ig_username}</b>.")
         return AWAIT_INTERVAL
     elif action == "toggletopic":
         acc = db_get_account(ig_username)
         new_mode = not acc.get('topic_mode', False)
         db_set_topic_mode(ig_username, new_mode)
-        await query.message.reply_text(f"Topic mode for {ig_username} is now {'enabled' if new_mode else 'disabled'}.")
+        query.message.reply_text(f"Topic mode for {ig_username} is now {'enabled' if new_mode else 'disabled'}.")
         query.data = f"manage_{ig_username}"
-        await manage_account_menu(update, context)
+        manage_account_menu(update, context)
     elif action == "cleardata":
         db_clear_seen_reels(ig_username)
-        await query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared.")
+        query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared.")
         query.data = f"manage_{ig_username}"
-        await manage_account_menu(update, context)
+        manage_account_menu(update, context)
     elif action == "remove":
         kbd = [[InlineKeyboardButton("YES, REMOVE", callback_data=f"confirmremove_{ig_username}"), InlineKeyboardButton("NO", callback_data=f"manage_{ig_username}")]]
-        await query.edit_message_text(f"⚠️ Remove <b>{ig_username}</b>?", reply_markup=InlineKeyboardMarkup(kbd), parse_mode='HTML')
+        query.edit_message_text(f"⚠️ Remove <b>{ig_username}</b>?", reply_markup=InlineKeyboardMarkup(kbd), parse_mode='HTML')
     elif action == "confirmremove":
         db_remove_account(update.effective_user.id, ig_username)
-        await query.edit_message_text(f"✅ Account <b>{ig_username}</b> has been removed.")
+        query.edit_message_text(f"✅ Account <b>{ig_username}</b> has been removed.")
 
-async def get_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_target_chat_id(update: Update, context: CallbackContext):
     ig_username = context.user_data.get('ig_username_to_manage')
     if not ig_username: return ConversationHandler.END
     try:
         db_set_target_chat(ig_username, int(update.message.text))
-        await update.message.reply_html(f"✅ Target chat for <b>{ig_username}</b> set.")
+        update.message.reply_html(f"✅ Target chat for <b>{ig_username}</b> set.")
     except ValueError:
-        await update.message.reply_text("Invalid ID.")
+        update.message.reply_text("Invalid ID.")
     del context.user_data['ig_username_to_manage']
     return ConversationHandler.END
 
-async def get_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_interval(update: Update, context: CallbackContext):
     ig_username = context.user_data.get('ig_username_to_manage')
     if not ig_username: return ConversationHandler.END
     try:
         interval = int(update.message.text)
         if interval < 5:
-            await update.message.reply_text("Min interval is 5 mins.")
+            update.message.reply_text("Min interval is 5 mins.")
             return AWAIT_INTERVAL
         db_set_periodic_interval(ig_username, interval)
-        await update.message.reply_html(f"✅ Interval for <b>{ig_username}</b> set to {interval} mins.")
+        update.message.reply_html(f"✅ Interval for <b>{ig_username}</b> set to {interval} mins.")
     except ValueError:
-        await update.message.reply_text("Invalid number.")
+        update.message.reply_text("Invalid number.")
     del context.user_data['ig_username_to_manage']
     return ConversationHandler.END
 
-async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def check_chat_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /checkchat <chat_id>")
+        update.message.reply_text("Usage: /checkchat <chat_id>")
         return
     try:
         chat_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("Error: Chat ID must be a number.")
+        update.message.reply_text("Error: Chat ID must be a number.")
         return
     
-    preliminary_message = await update.message.reply_text(f"Checking permissions for chat ID: {chat_id}...")
+    preliminary_message = update.message.reply_text(f"Checking permissions for chat ID: {chat_id}...")
     
     try:
-        chat = await context.bot.get_chat(chat_id)
-        me = await context.bot.get_me()
-        member = await chat.get_member(me.id)
+        chat = context.bot.get_chat(chat_id)
+        me = context.bot.get_me()
+        member = chat.get_member(me.id)
         
         perms = [f"<b>Chat Name:</b> {chat.title}", f"<b>Chat Type:</b> {chat.type}", f"<b>Is Forum:</b> {'✅ Yes' if chat.is_forum else '❌ No'}"]
         perms.append(f"\n<b>Bot's Status:</b>")
@@ -432,46 +432,46 @@ async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         perms.append(f"\n<b>Live Action Tests:</b>")
         try:
-            test_msg = await context.bot.send_message(chat_id=chat_id, text="...checking permissions...")
-            await context.bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
+            test_msg = context.bot.send_message(chat_id=chat_id, text="...checking permissions...")
+            context.bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
             perms.append("✅ Can Send & Delete Messages")
         except Exception as e:
             perms.append(f"❌ Failed to Send/Delete Messages: {e}")
             
         if chat.is_forum:
             try:
-                new_topic = await context.bot.create_forum_topic(chat_id=chat_id, name="Bot Permission Test")
-                await context.bot.delete_forum_topic(chat_id=chat_id, message_thread_id=new_topic.message_thread_id)
+                new_topic = context.bot.create_forum_topic(chat_id=chat_id, name="Bot Permission Test")
+                context.bot.delete_forum_topic(chat_id=chat_id, message_thread_id=new_topic.message_thread_id)
                 perms.append("✅ Can Create & Delete Topics")
             except Exception as e:
                 perms.append(f"❌ Failed to Manage Topics: {e}")
         
         status_text = f"<b>Permissions Check for <code>{chat_id}</code></b>\n\n" + "\n".join(perms)
-        await preliminary_message.edit_text(status_text, parse_mode='HTML')
+        preliminary_message.edit_text(status_text, parse_mode='HTML')
         
     except Exception as e:
-        await preliminary_message.edit_text(f"Could not check chat.\n<b>Error:</b> {e}", parse_mode='HTML')
+        preliminary_message.edit_text(f"Could not check chat.\n<b>Error:</b> {e}", parse_mode='HTML')
 
 
 # ========================================================================================
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
 # ========================================================================================
 
-async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
+def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
     ig_username = account.get('ig_username'); session_id = account.get('ig_session_id')
     target_chat_id = account.get('target_chat_id'); topic_mode = account.get('topic_mode', False)
     if not all([ig_username, session_id, target_chat_id]): return
     try:
-        await log_to_channel(bot, owner_id, f"🔍 Checking {ig_username}...", forward_error_to=owner_id)
+        log_to_channel(bot, owner_id, f"🔍 Checking {ig_username}...", forward_error_to=owner_id)
         ig_client = InstagramClient(ig_username, session_id)
         new_reels = ig_client.get_new_reels_from_dms()
         db_update_last_check(ig_username)
         
         if not new_reels:
-            await log_to_channel(bot, owner_id, f"✅ No new reels for {ig_username}.", forward_error_to=owner_id)
+            log_to_channel(bot, owner_id, f"✅ No new reels for {ig_username}.", forward_error_to=owner_id)
             return
         
-        await log_to_channel(bot, owner_id, f"Found {len(new_reels)} new reel(s) for {ig_username}.", forward_error_to=owner_id)
+        log_to_channel(bot, owner_id, f"Found {len(new_reels)} new reel(s) for {ig_username}.", forward_error_to=owner_id)
         
         for reel in new_reels:
             filepath = ig_client.download_reel(reel['reel_pk'])
@@ -489,57 +489,57 @@ async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
                     topic_name = reel['ig_chat_name']
                     topic_id = db_get_or_create_topic(target_chat_id, topic_name)
                     if not topic_id:
-                        new_topic = await bot.create_forum_topic(chat_id=target_chat_id, name=topic_name)
+                        new_topic = bot.create_forum_topic(chat_id=target_chat_id, name=topic_name)
                         topic_id = new_topic.message_thread_id
                         db_save_topic(target_chat_id, topic_name, topic_id, ig_username)
                     message_thread_id = topic_id
                 except Exception as e:
-                    await log_to_channel(bot, owner_id, f"⚠️ Topic Error: {e}", forward_error_to=owner_id)
+                    log_to_channel(bot, owner_id, f"⚠️ Topic Error: {e}", forward_error_to=owner_id)
 
-            await upload_video_with_progress(bot, target_chat_id, filepath, caption, message_thread_id)
+            upload_video_with_progress(bot, target_chat_id, filepath, caption, message_thread_id)
             db_add_seen_reel(ig_username, reel['reel_pk'])
             os.remove(filepath)
-            await log_to_channel(bot, owner_id, f"✅ Sent reel from {reel['from_user']}.", forward_error_to=owner_id)
+            log_to_channel(bot, owner_id, f"✅ Sent reel from {reel['from_user']}.", forward_error_to=owner_id)
         
-        await log_to_channel(bot, owner_id, f"🎉 Finished all uploads for {ig_username}.", forward_error_to=owner_id)
+        log_to_channel(bot, owner_id, f"🎉 Finished all uploads for {ig_username}.", forward_error_to=owner_id)
 
     except Exception as e:
         safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
-        await log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error}", forward_error_to=owner_id)
+        log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error}", forward_error_to=owner_id)
 
-async def force_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def force_check_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Not authorized.")
+        update.message.reply_text("⛔ Not authorized.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /forcecheck <instagram_username>")
+        update.message.reply_text("Usage: /forcecheck <instagram_username>")
         return
     ig_username = context.args[0]
     account = db_get_account(ig_username)
     if not account or account['owner_id'] != update.effective_user.id:
-        await update.message.reply_text(f"Account '{ig_username}' not found.")
+        update.message.reply_text(f"Account '{ig_username}' not found.")
         return
-    await update.message.reply_html(f"Manual check for <b>{ig_username}</b> triggered.")
-    asyncio.create_task(check_and_upload_account(context.bot, account, update.effective_user.id))
+    update.message.reply_html(f"Manual check for <b>{ig_username}</b> triggered.")
+    context.dispatcher.run_async(check_and_upload_account, context.bot, account, update.effective_user.id)
 
-async def monitor_loop(bot: Bot):
+def monitor_loop(bot: Bot):
     while True:
         try:
             logger.info("Starting periodic check cycle...")
             for account in db_get_all_accounts():
                 try:
                     if datetime.now() - account.get('last_check', datetime.min) >= timedelta(minutes=account.get('interval_minutes', 60)):
-                        asyncio.create_task(check_and_upload_account(bot, account, account['owner_id']))
+                        check_and_upload_account(bot, account, account['owner_id'])
                 except Exception as e:
                     logger.critical(f"UNHANDLED account error for {account.get('ig_username', 'N/A')}: {e}")
                     safe_error = str(e).replace("<","&lt;").replace(">","&gt;")
-                    await log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR ERROR for {account.get('ig_username', 'N/A')}: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
-            await asyncio.sleep(60)
+                    log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR ERROR for {account.get('ig_username', 'N/A')}: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
+            time.sleep(60)
         except Exception as e:
             logger.critical(f"FATAL MONITOR LOOP CRASH: {e}")
             safe_error = str(e).replace("<","&lt;").replace(">","&gt;")
-            await log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR LOOP CRASHED: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
-            await asyncio.sleep(300)
+            log_to_channel(bot, int(ADMIN_USER_ID), f"‼️ MONITOR LOOP CRASHED: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
+            time.sleep(300)
 
 # ========================================================================================
 # =====                             MAIN APPLICATION SETUP                           =====
@@ -551,33 +551,57 @@ def main():
     web_thread.start()
     logger.info(f"Web server started on port {os.environ.get('PORT', 8080)}.")
     
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    conv_handlers = [
-        ConversationHandler(entry_points=[CommandHandler("addaccount", add_account_start)], states={AWAIT_SESSION_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_get_session_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)]),
-        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")], states={AWAIT_TARGET_CHAT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_target_chat_id)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False),
-        ConversationHandler(entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")], states={AWAIT_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_interval)]}, fallbacks=[CommandHandler("cancel", cancel_conversation)], per_message=False)
-    ]
-    
-    cmd_handlers = [CommandHandler(cmd, func) for cmd, func in [
-        ("start", start_command), ("help", start_command), ("ping", ping_command),
-        ("status", status_command), ("restart", restart_command), ("myaccounts", my_accounts_command),
-        ("logc", log_channel_command), ("testlog", test_log_command), ("forcecheck", force_check_command),
-        ("checkchat", check_chat_command), ("kill", kill_command)
-    ]]
-    
-    application.add_handlers(conv_handlers + cmd_handlers)
-    application.add_handler(CallbackQueryHandler(manage_account_menu, pattern="^manage_"))
-    application.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
-    application.add_handler(CallbackQueryHandler(button_callback_handler))
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
 
-    monitor_thread = threading.Thread(target=lambda: asyncio.run(monitor_loop(application.bot)))
+    add_account_conv = ConversationHandler(
+        entry_points=[CommandHandler("addaccount", add_account_start)], 
+        states={AWAIT_SESSION_ID: [MessageHandler(Filters.text & ~Filters.command, add_account_get_session_id)]}, 
+        fallbacks=[CommandHandler("cancel", cancel_conversation)]
+    )
+    
+    set_target_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^settarget_")], 
+        states={AWAIT_TARGET_CHAT_ID: [MessageHandler(Filters.text & ~Filters.command, get_target_chat_id)]}, 
+        fallbacks=[CommandHandler("cancel", cancel_conversation)], 
+        per_message=False
+    )
+    
+    set_interval_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_callback_handler, pattern="^setinterval_")], 
+        states={AWAIT_INTERVAL: [MessageHandler(Filters.text & ~Filters.command, get_interval)]}, 
+        fallbacks=[CommandHandler("cancel", cancel_conversation)], 
+        per_message=False
+    )
+    
+    dispatcher.add_handler(add_account_conv)
+    dispatcher.add_handler(set_target_conv)
+    dispatcher.add_handler(set_interval_conv)
+
+    dispatcher.add_handler(CommandHandler("start", start_command))
+    dispatcher.add_handler(CommandHandler("help", start_command))
+    dispatcher.add_handler(CommandHandler("ping", ping_command))
+    dispatcher.add_handler(CommandHandler("status", status_command))
+    dispatcher.add_handler(CommandHandler("restart", restart_command))
+    dispatcher.add_handler(CommandHandler("myaccounts", my_accounts_command))
+    dispatcher.add_handler(CommandHandler("logc", log_channel_command))
+    dispatcher.add_handler(CommandHandler("testlog", test_log_command))
+    dispatcher.add_handler(CommandHandler("forcecheck", force_check_command))
+    dispatcher.add_handler(CommandHandler("checkchat", check_chat_command))
+    dispatcher.add_handler(CommandHandler("kill", kill_command))
+    
+    dispatcher.add_handler(CallbackQueryHandler(manage_account_menu, pattern="^manage_"))
+    dispatcher.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
+    dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
+
+    monitor_thread = threading.Thread(target=monitor_loop, args=(updater.bot,))
     monitor_thread.daemon = True
     monitor_thread.start()
     logger.info("Instagram monitoring loop started.")
 
     logger.info("Telegram bot is polling for updates...")
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
