@@ -136,7 +136,6 @@ class InstagramClient:
 # =====                             UPLOAD PROGRESS LOGIC                            =====
 # ========================================================================================
 
-# This section remains unchanged as it was working correctly.
 class ProgressManager:
     def __init__(self, bot: Bot, chat_id: int, message_id: int, total_size: int, filename: str):
         self.bot, self.chat_id, self.message_id = bot, chat_id, message_id
@@ -376,6 +375,43 @@ def get_interval(update: Update, context: CallbackContext):
     del context.user_data['ig_username_to_manage']
     return ConversationHandler.END
 
+def check_chat_command(update: Update, context: CallbackContext):
+    if str(update.effective_user.id) != ADMIN_USER_ID:
+        update.message.reply_text("⛔ Not authorized.")
+        return
+    if not context.args:
+        update.message.reply_text("Usage: /checkchat <chat_id>")
+        return
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        update.message.reply_text("Error: Chat ID must be a number.")
+        return
+    
+    preliminary_message = update.message.reply_text(f"Checking permissions for chat ID: {chat_id}...")
+    
+    try:
+        chat = context.bot.get_chat(chat_id)
+        me = context.bot.get_me()
+        member = chat.get_member(me.id)
+        
+        perms = [f"<b>Chat Name:</b> {chat.title}", f"<b>Chat Type:</b> {chat.type}"]
+        perms.append(f"\n<b>Bot's Status:</b>")
+        perms.append(f"{'✅' if member.status in ['administrator', 'creator'] else '❌'} Is an Administrator (`{member.status}`)")
+        perms.append(f"\n<b>Live Action Tests:</b>")
+        try:
+            test_msg = context.bot.send_message(chat_id=chat_id, text="...checking permissions...")
+            context.bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
+            perms.append("✅ Can Send & Delete Messages")
+        except Exception as e:
+            perms.append(f"❌ Failed to Send/Delete Messages: {e}")
+
+        status_text = f"<b>Permissions Check for <code>{chat_id}</code></b>\n\n" + "\n".join(perms)
+        preliminary_message.edit_text(status_text, parse_mode='HTML')
+        
+    except Exception as e:
+        preliminary_message.edit_text(f"Could not check chat.\n<b>Error:</b> {e}", parse_mode='HTML')
+
 # ========================================================================================
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
 # ========================================================================================
@@ -421,9 +457,9 @@ def check_and_upload_account(context: CallbackContext):
             log_to_channel(bot, owner_id, f"✅ Sent reel from {sender.username}.", forward_error_to=owner_id)
         
         log_to_channel(bot, owner_id, f"🎉 Finished all uploads for {ig_username}.", forward_error_to=owner_id)
-
+    
     except LoginRequired:
-        log_to_channel(bot, owner_id, f"🚨 SESSION EXPIRED for {ig_username}. Please use /addaccount to link it again.", forward_error_to=owner_id)
+        log_to_channel(bot, owner_id, f"🚨 <b>SESSION EXPIRED for {ig_username}.</b> Please use /addaccount to link it again.", forward_error_to=owner_id)
     except Exception as e:
         safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
         log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error}", forward_error_to=owner_id)
