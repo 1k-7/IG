@@ -4,3 +4,7 @@ pymongo[srv]
 python-dotenv
 requests
 yt-dlp
+Pillow==9.5.0
+pydantic==1.10.7
+pycryptodomex==3.17
+PySocks==1.7.1
