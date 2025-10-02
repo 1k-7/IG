@@ -34,23 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- MONKEY-PATCH FOR INSTAGRAPI VALIDATION ERROR ---
-try:
-    from instagrapi.types import ClipsMetadata, Media
-    from typing import Optional
-
-    # Make original_sound_info optional in the ClipsMetadata model
-    ClipsMetadata.model_fields['original_sound_info'].annotation = Optional[ClipsMetadata.model_fields['original_sound_info'].annotation]
-    ClipsMetadata.model_fields['original_sound_info'].required = False
-
-    # Rebuild the models to apply the changes
-    ClipsMetadata.model_rebuild(force=True)
-    Media.model_rebuild(force=True)
-    logger.info("Successfully applied monkey-patch for instagrapi ValidationError.")
-except Exception as e:
-    logger.error(f"Could not apply monkey-patch for instagrapi: {e}")
-# --- END OF MONKEY-PATCH ---
-
+# --- MONKEY-PATCH REMOVED - NOT NEEDED WITH INSTAGRAPI v1.17.6 ---
 
 # --- Environment Variables ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
