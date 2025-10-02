@@ -47,7 +47,6 @@ db = client.instagram_bot
 users_collection = db.users
 accounts_collection = db.instagram_accounts
 seen_reels_collection = db.seen_reels
-topics_collection = db.topics
 
 def db_add_user(user_id):
     users_collection.update_one({"user_id": user_id}, {"$setOnInsert": {"user_id": user_id}}, upsert=True)
@@ -78,7 +77,6 @@ def db_get_account(ig_username):
 def db_remove_account(user_id, ig_username):
     accounts_collection.delete_one({"owner_id": user_id, "ig_username": ig_username})
     seen_reels_collection.delete_many({"ig_username": ig_username})
-    topics_collection.delete_many({"ig_username": ig_username})
 
 def db_set_target_chat(ig_username, chat_id):
     accounts_collection.update_one({"ig_username": ig_username}, {"$set": {"target_chat_id": chat_id}})
@@ -114,24 +112,19 @@ class InstagramClient:
             self.client.load_settings(session_path)
 
         self.client.login_by_sessionid(session_id)
-        self.client.get_timeline_feed() # This is a lightweight check to see if the session is valid
+        self.client.get_timeline_feed() # Lightweight check to validate the session
         self.client.dump_settings(session_path)
         logger.info(f"IG client for {self.username} initialized and session validated.")
 
     def get_new_reels_from_dms(self):
         new_reels_data = []
-        threads = self.client.direct_threads(amount=20)
+        # Increased amount to fetch more threads, solving the "No new reels" issue
+        threads = self.client.direct_threads(amount=100) 
         for thread in threads:
-            messages = self.client.direct_messages(thread.id, amount=20)
-            for message in messages:
+            for message in thread.messages:
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
-                    # Correctly find the sender's user object from the thread's user list
-                    sender = None
-                    for user in thread.users:
-                        if user.pk == message.user_id:
-                            sender = user
-                            break
-                    if sender: # Only proceed if we found the sender
+                    sender = message.user
+                    if sender: # Ensure we have a sender
                         new_reels_data.append({"message": message, "sender": sender})
         return new_reels_data
 
@@ -188,7 +181,6 @@ def upload_video_with_progress(bot: Bot, chat_id: int, video_path: str, caption:
     except Exception as e:
         bot.edit_message_text(f"❌ Upload failed for {filename}.\n<b>Reason:</b> {e}", chat_id, status_message.message_id, parse_mode='HTML')
         raise
-
 # ========================================================================================
 # =====                            TELEGRAM HANDLERS LOGIC                           =====
 # ========================================================================================
@@ -221,7 +213,7 @@ def start_command(update: Update, context: CallbackContext):
         "<code>/forcecheck &lt;username&gt;</code> - Force an immediate check.\n"
         "<code>/checkchat &lt;ID&gt;</code> - Check permissions for a chat.\n"
         "<code>/logc &lt;ID&gt;</code> - Set a channel for bot logs.\n"
-        "<code>/kill</code> - Gracefully shut down the bot.\n\n"
+        "<code>/kill</code> - Instantly shut down the bot.\n\n"
         "<b>Public Commands:</b>\n"
         "<code>/ping</code> - Check if the bot is alive.\n"
         "<code>/help</code> - Show this message."
@@ -231,9 +223,10 @@ def kill_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
         update.message.reply_text("⛔ Not authorized.")
         return
-    update.message.reply_text("Shutting down bot gracefully...")
-    logger.info("Shutdown command received. Terminating application.")
-    threading.Thread(target=context.dispatcher.updater.stop).start()
+    update.message.reply_text("Shutting down immediately...")
+    logger.info("Immediate shutdown command received. Terminating process.")
+    # Use os._exit(0) for an immediate, forceful shutdown.
+    os._exit(0)
 
 def add_account_start(update: Update, context: CallbackContext):
     update.message.reply_text("Please send the `sessionid` cookie from your Instagram account.\n\nSend /cancel to stop.")
@@ -284,7 +277,6 @@ def manage_account_menu(update: Update, context: CallbackContext):
     keyboard = [
         [InlineKeyboardButton("🎯 Set Target Chat", callback_data=f"settarget_{ig_username}")],
         [InlineKeyboardButton("⏰ Set Interval", callback_data=f"setinterval_{ig_username}")],
-        [InlineKeyboardButton("📂 Toggle Topic Mode", callback_data=f"toggletopic_{ig_username}")],
         [InlineKeyboardButton("🗑️ Clear Seen Data", callback_data=f"cleardata_{ig_username}")],
         [InlineKeyboardButton("❌ Remove Account", callback_data=f"remove_{ig_username}")],
         [InlineKeyboardButton("⬅️ Back to Accounts", callback_data="myaccounts")]
@@ -296,12 +288,6 @@ def ping_command(update: Update, context: CallbackContext):
 
 def status_command(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Bot is running.")
-
-def restart_command(update: Update, context: CallbackContext):
-    if str(update.effective_user.id) != ADMIN_USER_ID:
-        update.message.reply_text("⛔ Not authorized.")
-        return
-    update.message.reply_text("Restarting...")
 
 def log_channel_command(update: Update, context: CallbackContext):
     if str(update.effective_user.id) != ADMIN_USER_ID:
@@ -339,16 +325,9 @@ def button_callback_handler(update: Update, context: CallbackContext):
     elif action == "setinterval":
         query.message.reply_html(f"Please send the interval in minutes for <b>{ig_username}</b>.")
         return AWAIT_INTERVAL
-    elif action == "toggletopic":
-        acc = db_get_account(ig_username)
-        new_mode = not acc.get('topic_mode', False)
-        db_set_topic_mode(ig_username, new_mode)
-        query.message.reply_text(f"Topic mode for {ig_username} is now {'enabled' if new_mode else 'disabled'}.")
-        query.data = f"manage_{ig_username}"
-        manage_account_menu(update, context)
     elif action == "cleardata":
         db_clear_seen_reels(ig_username)
-        query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared.")
+        query.message.reply_html(f"✅ Seen data for <b>{ig_username}</b> cleared. New reels will be downloaded on the next check.")
         query.data = f"manage_{ig_username}"
         manage_account_menu(update, context)
     elif action == "remove":
@@ -374,8 +353,8 @@ def get_interval(update: Update, context: CallbackContext):
     if not ig_username: return ConversationHandler.END
     try:
         interval = int(update.message.text)
-        if interval < 5:
-            update.message.reply_text("Min interval is 5 mins.")
+        if interval < 1:
+            update.message.reply_text("Min interval is 1 min.")
             return AWAIT_INTERVAL
         db_set_periodic_interval(ig_username, interval)
         update.message.reply_html(f"✅ Interval for <b>{ig_username}</b> set to {interval} mins.")
@@ -383,14 +362,6 @@ def get_interval(update: Update, context: CallbackContext):
         update.message.reply_text("Invalid number.")
     del context.user_data['ig_username_to_manage']
     return ConversationHandler.END
-
-def check_chat_command(update: Update, context: CallbackContext):
-    if str(update.effective_user.id) != ADMIN_USER_ID:
-        update.message.reply_text("⛔ Not authorized.")
-        return
-    # This function is not essential for core operation and has been simplified to avoid errors
-    update.message.reply_text("Chat check command is temporarily disabled for stability.")
-
 
 # ========================================================================================
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
@@ -462,7 +433,6 @@ def force_check_command(update: Update, context: CallbackContext):
     context.job_queue.run_once(check_and_upload_account, 1, context=account, name=f"manual_check_{ig_username}")
 
 def monitor_master_job(context: CallbackContext):
-    logger.info("Master job running: scheduling checks for all accounts...")
     for account in db_get_all_accounts():
         if datetime.now() - account.get('last_check', datetime.min) >= timedelta(minutes=account.get('interval_minutes', 60)):
             context.job_queue.run_once(
@@ -504,13 +474,11 @@ def main():
     dispatcher.add_handler(CommandHandler("help", start_command))
     dispatcher.add_handler(CommandHandler("ping", ping_command))
     dispatcher.add_handler(CommandHandler("status", status_command))
-    dispatcher.add_handler(CommandHandler("restart", restart_command))
+    dispatcher.add_handler(CommandHandler("kill", kill_command))
     dispatcher.add_handler(CommandHandler("myaccounts", my_accounts_command))
     dispatcher.add_handler(CommandHandler("logc", log_channel_command))
     dispatcher.add_handler(CommandHandler("testlog", test_log_command))
     dispatcher.add_handler(CommandHandler("forcecheck", force_check_command))
-    dispatcher.add_handler(CommandHandler("checkchat", check_chat_command))
-    dispatcher.add_handler(CommandHandler("kill", kill_command))
     
     dispatcher.add_handler(CallbackQueryHandler(manage_account_menu, pattern="^manage_"))
     dispatcher.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
