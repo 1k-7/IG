@@ -1,8 +1,8 @@
 #  ========================================================================================
-#  =====              COMPLETE INSTAGRAM TELEGRAM BOT (v7 - FINAL BUILD)              =====
+#  =====            COMPLETE INSTAGRAM TELEGRAM BOT (v8 - FINAL API FIX)              =====
 #  ========================================================================================
-#  This is the definitive, unabridged script with the critical 'video_download' fix,
-#  improved help text, and final stability enhancements.
+#  This version includes the definitive fix for the AttributeError in the /checkchat
+#  command by correctly interpreting the Telegram Bot API's object structure.
 #  ========================================================================================
 
 import os
@@ -50,7 +50,6 @@ accounts_collection = db.instagram_accounts
 seen_reels_collection = db.seen_reels
 topics_collection = db.topics
 
-# ... [All database functions remain the same as the previous version]
 def db_add_user(user_id):
     users_collection.update_one({"user_id": user_id}, {"$setOnInsert": {"user_id": user_id}}, upsert=True)
 
@@ -68,7 +67,8 @@ def db_add_or_update_account(user_id, ig_username, ig_session_id):
     accounts_collection.update_one(
         {"owner_id": user_id, "ig_username": ig_username},
         {"$set": {"ig_session_id": ig_session_id, "last_check": datetime.now() - timedelta(hours=1), "interval_minutes": 60, "is_active": True}},
-        upsert=True)
+        upsert=True
+    )
 
 def db_get_user_accounts(user_id):
     return list(accounts_collection.find({"owner_id": user_id}))
@@ -109,7 +109,9 @@ def db_get_or_create_topic(chat_id, topic_name):
 def db_save_topic(chat_id, topic_name, topic_id, ig_username):
     topics_collection.update_one(
         {"chat_id": chat_id, "name": topic_name},
-        {"$set": {"topic_id": topic_id, "ig_username": ig_username}}, upsert=True)
+        {"$set": {"topic_id": topic_id, "ig_username": ig_username}},
+        upsert=True
+    )
 
 # ========================================================================================
 # =====                             INSTAGRAM CLIENT LOGIC                           =====
@@ -120,14 +122,15 @@ class InstagramClient:
         self.username = username
         self.client = Client()
         session_path = f"/tmp/{self.username}_session.json"
+        
         try:
             if os.path.exists(session_path): self.client.load_settings(session_path)
             self.client.login_by_sessionid(session_id)
             self.client.user_info_by_username(self.username)
             self.client.dump_settings(session_path)
-            logger.info(f"IG client for {self.username} initialized.")
+            logger.info(f"Successfully logged into Instagram as {self.username}")
         except Exception as e:
-            logger.error(f"Failed to init IG client for {self.username}: {e}")
+            logger.error(f"Failed to initialize Instagram client for {self.username}: {e}")
             raise
 
     def get_new_reels_from_dms(self):
@@ -136,16 +139,22 @@ class InstagramClient:
         for thread in threads:
             messages = self.client.direct_messages(thread.id, amount=20)
             for message in messages:
-                sender_username = "Unknown"
-                if hasattr(message, 'user') and message.user: sender_username = message.user.username
+                sender_username = "Unknown Sender"
+                if hasattr(message, 'user') and message.user:
+                    sender_username = message.user.username
+
                 if message.item_type == "clip" and not db_has_seen_reel(self.username, message.clip.pk):
-                    new_reels.append({"reel_pk": message.clip.pk, "ig_chat_name": thread.thread_title, "from_user": sender_username, "clip_obj": message.clip})
+                    new_reels.append({
+                        "reel_pk": message.clip.pk,
+                        "ig_chat_name": thread.thread_title,
+                        "from_user": sender_username,
+                        "clip_obj": message.clip
+                    })
         return new_reels
 
     def download_reel(self, reel_pk):
         download_path = "/tmp/downloads"
         os.makedirs(download_path, exist_ok=True)
-        # FIX: Changed to the correct function name 'video_download'
         return self.client.video_download(reel_pk, folder=download_path)
 
 # ========================================================================================
@@ -153,7 +162,6 @@ class InstagramClient:
 # ========================================================================================
 
 class ProgressManager:
-    # ... [This class remains the same]
     def __init__(self, bot: Bot, chat_id: int, message_id: int, total_size: int, filename: str):
         self.bot, self.chat_id, self.message_id = bot, chat_id, message_id
         self.total_size, self.filename = total_size, filename
@@ -226,10 +234,10 @@ async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Shutdown command received. Terminating application.")
     asyncio.create_task(context.application.shutdown())
 
-# ... [All other handlers are complete and correct, included here for completeness]
 async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please send the `sessionid` cookie from your Instagram account.\n\nSend /cancel to stop.")
     return AWAIT_SESSION_ID
+
 async def add_account_get_session_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = update.message.text; user_id = update.effective_user.id
     try:
@@ -240,6 +248,7 @@ async def add_account_get_session_id(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_html(f"✅ Success! Instagram account <b>{ig_username}</b> linked. Use <code>/myaccounts</code> to configure it.")
         return ConversationHandler.END
     except Exception as e: await update.message.reply_html(f"❌ Login failed: {e}.\n\nPlease check your session ID, or /cancel."); return AWAIT_SESSION_ID
+
 async def my_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     accounts = db_get_user_accounts(update.effective_user.id)
     if not accounts: await update.message.reply_text("You haven't linked any Instagram accounts. Use /addaccount."); return
@@ -247,6 +256,7 @@ async def my_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = "Select an Instagram account to manage:"
     if update.callback_query: await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else: await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); ig_username = query.data.split("_")[1]
     account = db_get_account(ig_username)
@@ -263,23 +273,28 @@ async def manage_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("❌ Remove Account", callback_data=f"remove_{ig_username}")],
         [InlineKeyboardButton("⬅️ Back to Accounts", callback_data="myaccounts")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Pong! 🏓")
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("✅ Bot is running.")
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID: await update.message.reply_text("⛔ Not authorized."); return
     await update.message.reply_text("Restarting...")
+
 async def log_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID: await update.message.reply_text("⛔ Not authorized."); return
     if not context.args: await update.message.reply_text("Usage: /logc <ID>"); return
     try: db_set_log_channel(int(ADMIN_USER_ID), int(context.args[0])); await update.message.reply_html(f"✅ Log channel set to <code>{context.args[0]}</code>.")
     except (IndexError, ValueError): await update.message.reply_text("Invalid ID.")
+
 async def test_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID: await update.message.reply_text("⛔ Not authorized."); return
     await update.message.reply_text("Sending test message...")
     if await log_to_channel(context.bot, int(ADMIN_USER_ID), "✅ Test message.", forward_error_to=update.effective_chat.id):
         await update.message.reply_text("Test message sent!")
+
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled."); return ConversationHandler.END
+
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); action, ig_username = query.data.split("_", 1)
     context.user_data['ig_username_to_manage'] = ig_username
@@ -297,12 +312,14 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text(f"⚠️ Remove <b>{ig_username}</b>?", reply_markup=InlineKeyboardMarkup(kbd), parse_mode='HTML')
     elif action == "confirmremove":
         db_remove_account(update.effective_user.id, ig_username); await query.edit_message_text(f"✅ Account <b>{ig_username}</b> has been removed.")
+
 async def get_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ig_username = context.user_data.get('ig_username_to_manage')
     if not ig_username: return ConversationHandler.END
     try: db_set_target_chat(ig_username, int(update.message.text)); await update.message.reply_html(f"✅ Target chat for <b>{ig_username}</b> set.")
     except ValueError: await update.message.reply_text("Invalid ID.")
     del context.user_data['ig_username_to_manage']; return ConversationHandler.END
+
 async def get_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ig_username = context.user_data.get('ig_username_to_manage')
     if not ig_username: return ConversationHandler.END
@@ -312,6 +329,7 @@ async def get_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_set_periodic_interval(ig_username, interval); await update.message.reply_html(f"✅ Interval for <b>{ig_username}</b> set to {interval} mins.")
     except ValueError: await update.message.reply_text("Invalid number.")
     del context.user_data['ig_username_to_manage']; return ConversationHandler.END
+
 async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID: await update.message.reply_text("⛔ Not authorized."); return
     if not context.args: await update.message.reply_text("Usage: /checkchat <chat_id>"); return
@@ -322,18 +340,24 @@ async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat = await context.bot.get_chat(chat_id)
         me = await context.bot.get_me()
         member = await chat.get_member(me.id)
+        
         perms = []
         if member.status in ['administrator', 'creator']:
             perms.append(f"✅ Bot is an Administrator (`{member.status}`)")
             perms.append(f"{'✅' if member.can_post_messages else '❌'} Can Post Messages")
-            perms.append(f"{'✅' if member.can_send_videos else '❌'} Can Send Videos")
+            perms.append(f"{'✅' if member.can_edit_messages else '❌'} Can Edit Messages")
+            perms.append(f"{'✅' if member.can_delete_messages else '❌'} Can Delete Messages")
             perms.append(f"{'✅' if chat.is_forum else '⚠️'} Is a Forum: {'Yes' if chat.is_forum else 'No'}")
             perms.append(f"{'✅' if member.can_manage_topics else '❌'} Can Manage Topics")
         else:
             perms.append(f"❌ Bot is just a Member (`{member.status}`)")
+            if chat.permissions:
+                perms.append(f"{'✅' if chat.permissions.can_send_messages else '❌'} Can Send Messages (Group Setting)")
+                perms.append(f"{'✅' if chat.permissions.can_send_media_messages else '❌'} Can Send Media (Group Setting)")
         status_text = f"<b>Permissions for: {chat.title} (<code>{chat_id}</code>)</b>\n\n" + "\n".join(perms)
         await update.message.reply_html(status_text)
     except Exception as e: await update.message.reply_html(f"Could not check chat.\n<b>Error:</b> {e}")
+
 
 # ========================================================================================
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
@@ -355,9 +379,10 @@ async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
         for reel in new_reels:
             filepath = ig_client.download_reel(reel['reel_pk'])
             clip_user = reel['clip_obj'].user
+            caption_text = (reel['clip_obj'].caption_text or "").strip()
             caption = (
                 f"<i>Reel by <a href='https://instagram.com/{clip_user.username}'>{clip_user.full_name or clip_user.username}</a></i>\n\n"
-                f"{reel['clip_obj'].caption_text or ''}\n\n"
+                f"{caption_text}\n\n"
                 f"<b>Shared by:</b> {reel['from_user']} | <b>In Chat:</b> {reel['ig_chat_name']}"
             )
             
