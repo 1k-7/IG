@@ -1,3 +1,4 @@
+yt_dlp
 python-telegram-bot
 instagrapi>=2.2.1
 pymongo[srv]
