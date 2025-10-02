@@ -9,3 +9,4 @@ pydantic==1.10.7
 pycryptodomex==3.17
 PySocks==1.7.1
 urllib3==1.26.15
+APScheduler==3.10.4
