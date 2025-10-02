@@ -17,8 +17,8 @@ from pymongo import MongoClient
 from urllib.parse import quote_plus
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ConversationHandler,
-    MessageHandler, filters, ContextTypes, CallbackQueryHandler
+    Application, ApplicationBuilder, CommandHandler, ConversationHandler,
+    MessageHandler, filters, ContextTypes, CallbackQueryHandler, JobQueue
 )
 from telegram.error import TelegramError
 from instagrapi import Client
@@ -35,10 +35,15 @@ logger = logging.getLogger(__name__)
 # --- ROBUST MONKEY-PATCH FOR INSTAGRAPI Pydantic v2 ---
 try:
     from instagrapi.types import ClipsMetadata
+    from pydantic import Field
     from typing import Optional
-    # Make original_sound_info optional in the ClipsMetadata model
-    ClipsMetadata.model_fields['original_sound_info'].annotation = Optional[ClipsMetadata.model_fields['original_sound_info'].annotation]
-    ClipsMetadata.model_fields['original_sound_info'].required = False
+
+    # Overwrite the field to make it optional
+    ClipsMetadata.model_fields['original_sound_info'] = Field(
+        default=None,
+        annotation=Optional[type(ClipsMetadata.model_fields['original_sound_info'].annotation)],
+    )
+
     # Rebuild the models to apply the changes
     ClipsMetadata.model_rebuild(force=True)
     Media.model_rebuild(force=True)
@@ -478,10 +483,17 @@ async def check_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # =====                     CORE MONITORING AND UPLOAD LOGIC                         =====
 # ========================================================================================
 
-async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
-    ig_username = account.get('ig_username'); session_id = account.get('ig_session_id')
-    target_chat_id = account.get('target_chat_id'); topic_mode = account.get('topic_mode', False)
+async def check_and_upload_account(context: ContextTypes.DEFAULT_TYPE):
+    bot = context.bot
+    account = context.job.data
+    owner_id = account['owner_id']
+    ig_username = account.get('ig_username')
+    session_id = account.get('ig_session_id')
+    target_chat_id = account.get('target_chat_id')
+    topic_mode = account.get('topic_mode', False)
+
     if not all([ig_username, session_id, target_chat_id]): return
+    
     try:
         await log_to_channel(bot, owner_id, f"🔍 Checking {ig_username}...", forward_error_to=owner_id)
         ig_client = InstagramClient(ig_username, session_id)
@@ -498,7 +510,7 @@ async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
             clip = message.clip
             caption_text = (clip.caption_text or "").strip()
             sender_username = message.user.username if message.user else "Unknown"
-
+            
             caption = (
                 f"<i>Reel by <a href='https://instagram.com/{clip.user.username}'>{clip.user.full_name or clip.user.username}</a></i>\n\n"
                 f"{caption_text}\n\n"
@@ -528,6 +540,7 @@ async def check_and_upload_account(bot: Bot, account: dict, owner_id: int):
         safe_error = str(e).replace("<", "&lt;").replace(">", "&gt;")
         await log_to_channel(bot, owner_id, f"❌ CRITICAL ERROR for {ig_username}: {safe_error}", forward_error_to=owner_id)
 
+
 async def force_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_USER_ID:
         await update.message.reply_text("⛔ Not authorized.")
@@ -541,26 +554,20 @@ async def force_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"Account '{ig_username}' not found.")
         return
     await update.message.reply_html(f"Manual check for <b>{ig_username}</b> triggered.")
-    asyncio.create_task(check_and_upload_account(context.bot, account, update.effective_user.id))
+    context.application.job_queue.run_once(check_and_upload_account, 1, data=account)
 
-async def monitor_loop(application: "Application"):
-    while True:
-        try:
-            logger.info("Starting periodic check cycle...")
-            for account in db_get_all_accounts():
-                try:
-                    if datetime.now() - account.get('last_check', datetime.min) >= timedelta(minutes=account.get('interval_minutes', 60)):
-                        asyncio.create_task(check_and_upload_account(application.bot, account, account['owner_id']))
-                except Exception as e:
-                    logger.critical(f"UNHANDLED account error for {account.get('ig_username', 'N/A')}: {e}")
-                    safe_error = str(e).replace("<","&lt;").replace(">","&gt;")
-                    await log_to_channel(application.bot, int(ADMIN_USER_ID), f"‼️ MONITOR ERROR for {account.get('ig_username', 'N/A')}: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
-            await asyncio.sleep(60)
-        except Exception as e:
-            logger.critical(f"FATAL MONITOR LOOP CRASH: {e}")
-            safe_error = str(e).replace("<","&lt;").replace(">","&gt;")
-            await log_to_channel(application.bot, int(ADMIN_USER_ID), f"‼️ MONITOR LOOP CRASHED: {safe_error}", forward_error_to=int(ADMIN_USER_ID))
-            await asyncio.sleep(300)
+
+async def monitor_master_job(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Master job running: scheduling checks...")
+    for account in db_get_all_accounts():
+        interval = account.get('interval_minutes', 60) * 60
+        # Schedule a one-time job for each account
+        context.application.job_queue.run_once(
+            check_and_upload_account, 
+            when=1, # Run almost immediately
+            data=account,
+            name=f"check_{account['ig_username']}"
+        )
 
 # ========================================================================================
 # =====                             MAIN APPLICATION SETUP                           =====
@@ -592,8 +599,9 @@ def main():
     application.add_handler(CallbackQueryHandler(my_accounts_command, pattern="^myaccounts$"))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
 
-    # Run monitor_loop in the background
-    application.job_queue.run_repeating(lambda ctx: monitor_loop(application), interval=60, first=10)
+    # Run the master job that schedules individual account checks
+    if application.job_queue:
+        application.job_queue.run_repeating(monitor_master_job, interval=60, first=10)
 
     logger.info("Telegram bot is polling for updates...")
     application.run_polling()
